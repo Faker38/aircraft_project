@@ -30,11 +30,11 @@ class MainWindow(QMainWindow):
     """Application shell that hosts the sidebar and workflow pages."""
 
     PAGE_META: dict[str, tuple[str, str]] = {
-        "overview": ("工程总览", "集中查看采集、处理、训练和交付链路。"),
-        "capture": ("步骤 1 · 数据采集", "配置设备接入与采集参数，生成原始数据文件。"),
-        "process": ("步骤 2 · 信号处理与标注", "完成信号处理、样本标注和数据集构建。"),
-        "train": ("步骤 3 · 模型训练", "配置训练任务并完成结果评估。"),
-        "export": ("步骤 4 · 模型导出", "导出部署模型及配套交付文件。"),
+        "overview": ("工程总览", "查看当前流程阶段、系统状态和任务入口。"),
+        "capture": ("步骤 1 · 数据采集", "完成设备接入、参数配置和原始文件记录。"),
+        "process": ("步骤 2 · 信号处理与标注", "完成样本处理、标注维护和数据集构建。"),
+        "train": ("步骤 3 · 模型训练", "配置训练任务并查看评估结果。"),
+        "export": ("步骤 4 · 模型导出", "生成部署模型与配套交付文件。"),
     }
 
     def __init__(self) -> None:
@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
 
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1560, 960)
+        self.resize(1500, 920)
         self.setMinimumSize(1320, 820)
 
         self.page_buttons: dict[str, QPushButton] = {}
@@ -55,13 +55,10 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        sidebar = self._build_sidebar()
-        main_area = self._build_main_area()
+        root_layout.addWidget(self._build_sidebar())
+        root_layout.addWidget(self._build_main_area(), 1)
 
-        root_layout.addWidget(sidebar)
-        root_layout.addWidget(main_area, 1)
-
-        self.statusBar().showMessage("系统已加载，当前为联调模式。")
+        self.statusBar().showMessage("系统就绪 | 当前模式：联调")
 
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._refresh_clock)
@@ -75,17 +72,11 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(290)
+        sidebar.setFixedWidth(272)
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(18)
-
-        branding_frame = QFrame()
-        branding_frame.setObjectName("InfoPanel")
-        branding_layout = QVBoxLayout(branding_frame)
-        branding_layout.setContentsMargins(18, 18, 18, 18)
-        branding_layout.setSpacing(8)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(16)
 
         title_label = QLabel(APP_NAME)
         title_label.setObjectName("AppTitle")
@@ -93,9 +84,9 @@ class MainWindow(QMainWindow):
         subtitle_label.setObjectName("AppSubTitle")
         subtitle_label.setWordWrap(True)
 
-        branding_layout.addWidget(title_label)
-        branding_layout.addWidget(subtitle_label)
-        layout.addWidget(branding_frame)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addSpacing(8)
 
         section_label = QLabel("任务导航")
         section_label.setObjectName("SidebarSection")
@@ -105,9 +96,9 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         nav_items = [
-            ("overview", "总览"),
+            ("overview", "工程总览"),
             ("capture", "数据采集"),
-            ("process", "信号处理"),
+            ("process", "信号处理与标注"),
             ("train", "模型训练"),
             ("export", "模型导出"),
         ]
@@ -120,26 +111,42 @@ class MainWindow(QMainWindow):
             self.page_buttons[key] = button
             layout.addWidget(button)
 
-        layout.addSpacing(8)
-        device_panel = QFrame()
-        device_panel.setObjectName("InfoPanel")
-        device_layout = QVBoxLayout(device_panel)
-        device_layout.setContentsMargins(18, 18, 18, 18)
-        device_layout.setSpacing(10)
-
-        device_title = QLabel("系统状态")
-        device_title.setObjectName("StepTitle")
-        self.global_connection_badge = StatusBadge("3943B 未接入", "danger")
-        device_hint = QLabel("支持 LAN/VISA 接入配置、状态监测和采集控制。")
-        device_hint.setObjectName("MutedText")
-        device_hint.setWordWrap(True)
-
-        device_layout.addWidget(device_title)
-        device_layout.addWidget(self.global_connection_badge, 0, Qt.AlignmentFlag.AlignLeft)
-        device_layout.addWidget(device_hint)
-        layout.addWidget(device_panel)
-
         layout.addStretch(1)
+
+        status_panel = QFrame()
+        status_panel.setObjectName("InfoPanel")
+        status_layout = QVBoxLayout(status_panel)
+        status_layout.setContentsMargins(14, 14, 14, 14)
+        status_layout.setSpacing(10)
+
+        status_title = QLabel("系统状态")
+        status_title.setObjectName("SectionTitle")
+
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.setSpacing(8)
+        mode_label = QLabel("运行模式")
+        mode_label.setObjectName("FieldLabel")
+        self.sidebar_mode_badge = StatusBadge("联调模式", "info", size="sm")
+        mode_row.addWidget(mode_label)
+        mode_row.addStretch(1)
+        mode_row.addWidget(self.sidebar_mode_badge, 0, Qt.AlignmentFlag.AlignRight)
+
+        device_row = QHBoxLayout()
+        device_row.setContentsMargins(0, 0, 0, 0)
+        device_row.setSpacing(8)
+        device_label = QLabel("设备状态")
+        device_label.setObjectName("FieldLabel")
+        self.global_connection_badge = StatusBadge("3943B 未接入", "danger", size="sm")
+        device_row.addWidget(device_label)
+        device_row.addStretch(1)
+        device_row.addWidget(self.global_connection_badge, 0, Qt.AlignmentFlag.AlignRight)
+
+        status_layout.addWidget(status_title)
+        status_layout.addLayout(mode_row)
+        status_layout.addLayout(device_row)
+        layout.addWidget(status_panel)
+
         return sidebar
 
     def _build_main_area(self) -> QWidget:
@@ -147,8 +154,8 @@ class MainWindow(QMainWindow):
 
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(24, 20, 24, 18)
-        layout.setSpacing(18)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setSpacing(16)
 
         layout.addWidget(self._build_header())
 
@@ -184,11 +191,11 @@ class MainWindow(QMainWindow):
         panel.setObjectName("HeaderPanel")
 
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(18)
 
         title_layout = QVBoxLayout()
-        title_layout.setSpacing(4)
+        title_layout.setSpacing(2)
 
         self.page_title_label = QLabel()
         self.page_title_label.setObjectName("PageTitle")
@@ -199,41 +206,37 @@ class MainWindow(QMainWindow):
 
         title_layout.addWidget(self.page_title_label)
         title_layout.addWidget(self.page_description_label)
-
         layout.addLayout(title_layout, 1)
 
-        right_layout = QHBoxLayout()
-        right_layout.setSpacing(10)
+        strip = QFrame()
+        strip.setObjectName("HeaderStatusStrip")
+        strip_layout = QHBoxLayout(strip)
+        strip_layout.setContentsMargins(14, 10, 14, 10)
+        strip_layout.setSpacing(12)
 
-        mode_panel = QFrame()
-        mode_panel.setObjectName("HeaderInfoPanel")
-        mode_layout = QVBoxLayout(mode_panel)
-        mode_layout.setContentsMargins(14, 10, 14, 10)
-        mode_layout.setSpacing(6)
+        mode_label = QLabel("运行模式")
+        mode_label.setObjectName("HeaderMetaLabel")
+        self.header_mode_badge = StatusBadge("联调模式", "info", size="sm")
 
-        mode_title = QLabel("运行状态")
-        mode_title.setObjectName("HeaderMetaLabel")
-        self.global_mode_badge = StatusBadge("联调模式", "info")
-        mode_layout.addWidget(mode_title)
-        mode_layout.addWidget(self.global_mode_badge, 0, Qt.AlignmentFlag.AlignLeft)
-
-        clock_panel = QFrame()
-        clock_panel.setObjectName("HeaderInfoPanel")
-        clock_layout = QVBoxLayout(clock_panel)
-        clock_layout.setContentsMargins(14, 10, 14, 10)
-        clock_layout.setSpacing(6)
+        device_label = QLabel("设备状态")
+        device_label.setObjectName("HeaderMetaLabel")
+        self.header_device_badge = StatusBadge("3943B 未接入", "danger", size="sm")
 
         clock_title = QLabel("系统时钟")
         clock_title.setObjectName("HeaderMetaLabel")
         self.clock_label = QLabel()
         self.clock_label.setObjectName("HeaderMetaValue")
-        clock_layout.addWidget(clock_title)
-        clock_layout.addWidget(self.clock_label)
 
-        right_layout.addWidget(mode_panel)
-        right_layout.addWidget(clock_panel)
+        strip_layout.addWidget(mode_label)
+        strip_layout.addWidget(self.header_mode_badge)
+        strip_layout.addSpacing(4)
+        strip_layout.addWidget(device_label)
+        strip_layout.addWidget(self.header_device_badge)
+        strip_layout.addSpacing(4)
+        strip_layout.addWidget(clock_title)
+        strip_layout.addWidget(self.clock_label)
 
-        layout.addLayout(right_layout)
+        layout.addWidget(strip, 0, Qt.AlignmentFlag.AlignRight)
         return panel
 
     def select_page(self, key: str) -> None:
@@ -248,15 +251,21 @@ class MainWindow(QMainWindow):
         title, description = self.PAGE_META[key]
         self.page_title_label.setText(title)
         self.page_description_label.setText(description)
-        self.statusBar().showMessage(f"已切换到 {title}")
+        self.statusBar().showMessage(f"当前页面：{title}")
 
     def _update_connection_badge(self, connected: bool) -> None:
-        """Update the global connection badge from the capture page."""
+        """Update shared device status widgets from the capture page."""
 
         if connected:
             self.global_connection_badge.set_status("3943B 已接入", "success")
+            self.header_device_badge.set_status("3943B 已接入", "success")
         else:
             self.global_connection_badge.set_status("3943B 未接入", "danger")
+            self.header_device_badge.set_status("3943B 未接入", "danger")
+
+        overview_page = self.pages.get("overview")
+        if isinstance(overview_page, OverviewPage):
+            overview_page.set_device_connected(connected)
 
     def _refresh_clock(self) -> None:
         """Update the header clock display."""

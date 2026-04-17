@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import DEFAULT_DEVICE_IP, DEFAULT_DEVICE_PORT
-from ui.widgets import SectionCard, StatusBadge
+from config import DEFAULT_DEVICE_IP, DEFAULT_DEVICE_PORT, RAW_DATA_DIR
+from ui.widgets import MetricCard, SectionCard, StatusBadge
 
 
 class CapturePage(QWidget):
@@ -36,6 +36,7 @@ class CapturePage(QWidget):
         super().__init__(parent)
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._advance_mock_capture)
+        self._connected = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -46,21 +47,22 @@ class CapturePage(QWidget):
         container = QWidget()
         self.content_layout = QVBoxLayout(container)
         self.content_layout.setContentsMargins(6, 6, 6, 6)
-        self.content_layout.setSpacing(18)
+        self.content_layout.setSpacing(16)
+
+        self.content_layout.addLayout(self._build_summary_row())
 
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
         top_row.addWidget(self._build_connection_card(), 3)
-        top_row.addWidget(self._build_guidance_card(), 2)
+        top_row.addWidget(self._build_control_card(), 2)
 
-        middle_row = QHBoxLayout()
-        middle_row.setSpacing(14)
-        middle_row.addWidget(self._build_parameters_card(), 3)
-        middle_row.addWidget(self._build_control_card(), 2)
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(14)
+        bottom_row.addWidget(self._build_parameters_card(), 2)
+        bottom_row.addWidget(self._build_files_card(), 3)
 
         self.content_layout.addLayout(top_row)
-        self.content_layout.addLayout(middle_row)
-        self.content_layout.addWidget(self._build_files_card())
+        self.content_layout.addLayout(bottom_row)
         self.content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -68,18 +70,32 @@ class CapturePage(QWidget):
 
         self._populate_mock_rows()
         self._update_visa_preview()
+        self._refresh_summary_metrics()
+
+    def _build_summary_row(self) -> QHBoxLayout:
+        """Create the compact summary row."""
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+
+        self.connection_metric = MetricCard("设备状态", "未接入", compact=True)
+        self.port_metric = MetricCard("控制端口", str(DEFAULT_DEVICE_PORT), compact=True, accent_color="#7CB98B")
+        self.file_metric = MetricCard("原始文件", "0", compact=True, accent_color="#C59A63")
+
+        row.addWidget(self.connection_metric)
+        row.addWidget(self.port_metric)
+        row.addWidget(self.file_metric)
+        return row
 
     def _build_connection_card(self) -> SectionCard:
         """Create the device connection card."""
 
-        header_badge = StatusBadge("设备未接入", "danger")
-        self.connection_badge = header_badge
-
+        self.connection_badge = StatusBadge("设备未接入", "danger", size="sm")
         section = SectionCard(
-            "3943B 设备连接",
-            "支持 RJ45 LAN 远程控制，VISA 地址格式为 "
-            "TCPIP::host_address::port::SOCKET，默认端口 5025。",
-            right_widget=header_badge,
+            "设备连接",
+            "配置 3943B LAN 接入参数。",
+            right_widget=self.connection_badge,
+            compact=True,
         )
 
         form_layout = QFormLayout()
@@ -123,13 +139,13 @@ class CapturePage(QWidget):
 
         device_grid = QGridLayout()
         device_grid.setHorizontalSpacing(12)
-        device_grid.setVerticalSpacing(12)
+        device_grid.setVerticalSpacing(10)
 
         self.device_labels = {
             "型号": QLabel("3943B 监测接收机"),
             "接口": QLabel("LAN / VISA / SCPI"),
-            "端口": QLabel("5025"),
-            "心跳": QLabel("3 秒轮询"),
+            "链路": QLabel("未建立"),
+            "记录模式": QLabel("IQ 记录"),
         }
 
         for label_widget in self.device_labels.values():
@@ -146,27 +162,44 @@ class CapturePage(QWidget):
         section.body_layout.addLayout(device_grid)
         return section
 
-    def _build_guidance_card(self) -> SectionCard:
-        """Create the capture tips card."""
+    def _build_control_card(self) -> SectionCard:
+        """Create the capture execution card."""
 
+        self.capture_stage_badge = StatusBadge("等待开始", "info", size="sm")
         section = SectionCard(
-            "联调要点",
-            "采集前请确认网络链路、记录选件和存储路径。",
+            "任务控制",
+            "执行采集并查看任务日志。",
+            right_widget=self.capture_stage_badge,
+            compact=True,
         )
 
-        tips = [
-            "LAN 接口位于设备侧面板，可用于远程控制。",
-            "建议使用屏蔽网线，降低电磁干扰对测量结果的影响。",
-            "IQ 记录支持 16 位和 32 位模式，当前界面按 32 位流程展示。",
-            "当前页面使用联调采集流程，后续可直接接入 CaptureWorker。",
-        ]
+        self.capture_progress = QProgressBar()
+        self.capture_progress.setRange(0, 100)
+        self.capture_progress.setValue(0)
 
-        for tip in tips:
-            tip_label = QLabel(f"• {tip}")
-            tip_label.setObjectName("MutedText")
-            tip_label.setWordWrap(True)
-            section.body_layout.addWidget(tip_label)
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
 
+        self.start_button = QPushButton("开始采集")
+        self.start_button.setObjectName("PrimaryButton")
+        self.start_button.clicked.connect(self._start_mock_capture)
+
+        self.stop_button = QPushButton("停止采集")
+        self.stop_button.setObjectName("DangerButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._stop_mock_capture)
+
+        button_row.addWidget(self.start_button)
+        button_row.addWidget(self.stop_button)
+        button_row.addStretch(1)
+
+        self.log_output = QPlainTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setMaximumHeight(200)
+
+        section.body_layout.addWidget(self.capture_progress)
+        section.body_layout.addLayout(button_row)
+        section.body_layout.addWidget(self.log_output)
         return section
 
     def _build_parameters_card(self) -> SectionCard:
@@ -174,7 +207,8 @@ class CapturePage(QWidget):
 
         section = SectionCard(
             "采集参数",
-            "按默认任务参数完成快速配置。",
+            "按任务需要设置记录参数。",
+            compact=True,
         )
 
         form_layout = QFormLayout()
@@ -201,65 +235,26 @@ class CapturePage(QWidget):
         self.device_label_input = QLineEdit("drone_001")
         self.device_label_input.setPlaceholderText("例如 drone_001")
 
+        output_path = QLabel(str(RAW_DATA_DIR))
+        output_path.setObjectName("ValueLabel")
+        output_path.setWordWrap(True)
+
         form_layout.addRow("中心频率", self.center_frequency_input)
         form_layout.addRow("带宽", self.bandwidth_input)
         form_layout.addRow("记录时间", self.duration_input)
         form_layout.addRow("设备编号", self.device_label_input)
-
-        path_hint = QLabel("输出目录：data/raw/；文件名格式：日期_时间_频点_带宽_设备编号.cap。")
-        path_hint.setObjectName("HintText")
-        path_hint.setWordWrap(True)
+        form_layout.addRow("输出目录", output_path)
 
         section.body_layout.addLayout(form_layout)
-        section.body_layout.addWidget(path_hint)
-        return section
-
-    def _build_control_card(self) -> SectionCard:
-        """Create the capture execution card."""
-
-        section = SectionCard(
-            "采集控制",
-            "显示采集状态、执行进度和任务日志。",
-        )
-
-        self.capture_stage_badge = StatusBadge("等待开始", "info")
-        section.body_layout.addWidget(self.capture_stage_badge, 0, Qt.AlignmentFlag.AlignLeft)
-
-        self.capture_progress = QProgressBar()
-        self.capture_progress.setRange(0, 100)
-        self.capture_progress.setValue(0)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
-
-        self.start_button = QPushButton("开始采集")
-        self.start_button.setObjectName("PrimaryButton")
-        self.start_button.clicked.connect(self._start_mock_capture)
-
-        self.stop_button = QPushButton("停止采集")
-        self.stop_button.setObjectName("DangerButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._stop_mock_capture)
-
-        button_row.addWidget(self.start_button)
-        button_row.addWidget(self.stop_button)
-        button_row.addStretch(1)
-
-        self.log_output = QPlainTextEdit()
-        self.log_output.setReadOnly(True)
-        self.log_output.setMaximumHeight(180)
-
-        section.body_layout.addWidget(self.capture_progress)
-        section.body_layout.addLayout(button_row)
-        section.body_layout.addWidget(self.log_output)
         return section
 
     def _build_files_card(self) -> SectionCard:
         """Create the captured files table card."""
 
         section = SectionCard(
-            "已采集文件",
-            "显示采集文件及处理状态，后续可直接接入 raw_data.db。",
+            "记录文件",
+            "显示采集文件与当前处理状态。",
+            compact=True,
         )
 
         self.files_table = QTableWidget(0, 6)
@@ -292,6 +287,7 @@ class CapturePage(QWidget):
         self.files_table.insertRow(row_index)
         for column, value in enumerate(row_data):
             self.files_table.setItem(row_index, column, QTableWidgetItem(value))
+        self._refresh_summary_metrics()
 
     def _update_visa_preview(self) -> None:
         """Refresh the VISA preview string."""
@@ -299,18 +295,22 @@ class CapturePage(QWidget):
         host = self.ip_input.text().strip() or DEFAULT_DEVICE_IP
         port = self.port_input.value()
         self.visa_preview.setText(f"TCPIP::{host}::{port}::SOCKET")
+        self.port_metric.set_value(str(port))
 
     def _set_connection_state(self, connected: bool) -> None:
         """Update the mocked device connection state."""
 
+        self._connected = connected
         if connected:
             self.connection_badge.set_status("设备在线", "success")
-            self.device_labels["心跳"].setText("3 秒轮询中")
+            self.device_labels["链路"].setText("已建立")
             self._append_log("LAN 链路建立，设备响应正常。")
         else:
             self.connection_badge.set_status("设备未接入", "danger")
-            self.device_labels["心跳"].setText("未启用")
+            self.device_labels["链路"].setText("未建立")
             self._append_log("链路已断开，等待重新接入。")
+
+        self._refresh_summary_metrics()
         self.connection_state_changed.emit(connected)
 
     def _mock_query_identity(self) -> None:
@@ -373,3 +373,9 @@ class CapturePage(QWidget):
 
         timestamp = QDateTime.currentDateTime().toString("HH:mm:ss")
         self.log_output.appendPlainText(f"[{timestamp}] {message}")
+
+    def _refresh_summary_metrics(self) -> None:
+        """Refresh compact summary metrics."""
+
+        self.connection_metric.set_value("在线" if self._connected else "未接入")
+        self.file_metric.set_value(str(self.files_table.rowCount()))

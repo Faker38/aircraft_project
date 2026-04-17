@@ -41,13 +41,13 @@ class ProcessPage(QWidget):
         container = QWidget()
         content_layout = QVBoxLayout(container)
         content_layout.setContentsMargins(6, 6, 6, 6)
-        content_layout.setSpacing(18)
+        content_layout.setSpacing(16)
 
         metrics_row = QHBoxLayout()
-        metrics_row.setSpacing(14)
-        metrics_row.addWidget(MetricCard("待处理批次", "12", "可从 raw_data.db 查询状态为 raw 的记录。"))
-        metrics_row.addWidget(MetricCard("样本数量", "3,428", "默认切片长度 65536，可按任务需要调整。", "#19C584"))
-        metrics_row.addWidget(MetricCard("数据集版本", "v003", "显示当前版本、划分策略和历史记录。", "#FFA726"))
+        metrics_row.setSpacing(12)
+        metrics_row.addWidget(MetricCard("待处理批次", "12", compact=True))
+        metrics_row.addWidget(MetricCard("样本数量", "3,428", accent_color="#7CB98B", compact=True))
+        metrics_row.addWidget(MetricCard("数据集版本", "v003", accent_color="#C59A63", compact=True))
         content_layout.addLayout(metrics_row)
 
         tabs = QTabWidget()
@@ -65,12 +65,12 @@ class ProcessPage(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
 
-        file_card = SectionCard("原始数据列表", "选择待处理的 .cap 文件。")
+        file_card = SectionCard("原始文件", "选择待处理记录。", compact=True)
         file_table = QTableWidget(3, 5)
         file_table.setHorizontalHeaderLabels(["文件名", "设备编号", "采样时长", "状态", "更新时间"])
         file_table.horizontalHeader().setStretchLastSection(True)
@@ -87,11 +87,15 @@ class ProcessPage(QWidget):
         for row_index, row_data in enumerate(mock_rows):
             for column, value in enumerate(row_data):
                 file_table.setItem(row_index, column, QTableWidgetItem(value))
-
         file_card.body_layout.addWidget(file_table)
         top_row.addWidget(file_card, 3)
 
-        config_card = SectionCard("处理参数", "设置切片长度、检测阈值和滤波选项。")
+        config_card = SectionCard(
+            "处理参数",
+            "设置切片与检测参数。",
+            right_widget=StatusBadge("待处理", "info", size="sm"),
+            compact=True,
+        )
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
@@ -113,7 +117,6 @@ class ProcessPage(QWidget):
         form_layout.addRow("能量阈值", threshold_input)
         form_layout.addRow("滤波选项", bandpass_checkbox)
 
-        status_badge = StatusBadge("待处理", "info")
         process_progress = QProgressBar()
         process_progress.setValue(42)
 
@@ -128,27 +131,19 @@ class ProcessPage(QWidget):
         button_row.addWidget(stop_button)
         button_row.addStretch(1)
 
-        config_card.body_layout.addWidget(status_badge)
         config_card.body_layout.addWidget(process_progress)
         config_card.body_layout.addLayout(form_layout)
         config_card.body_layout.addLayout(button_row)
         top_row.addWidget(config_card, 2)
 
-        pipeline_card = SectionCard("处理链路", "显示 .cap 文件到训练样本的主要处理步骤。")
-        for text in [
-            "1. 解析 .cap 文件为 IQ 数组与元信息",
-            "2. 去 DC 偏移并执行幅度归一化",
-            "3. 可选带通滤波与噪声基底估计",
-            "4. 检测有效信号段并切片保存为 .npy",
-            "5. 记录 SNR、中心频率和来源文件等元信息",
-        ]:
-            label = QLabel(text)
-            label.setObjectName("MutedText")
-            label.setWordWrap(True)
-            pipeline_card.body_layout.addWidget(label)
+        flow_card = SectionCard("处理摘要", "解析 -> 归一化 -> 切片 -> 入库", compact=True)
+        flow_label = QLabel("当前链路按 .cap 解析、信号筛选、样本切片和元数据入库顺序执行。")
+        flow_label.setObjectName("MutedText")
+        flow_label.setWordWrap(True)
+        flow_card.body_layout.addWidget(flow_label)
 
         layout.addLayout(top_row)
-        layout.addWidget(pipeline_card)
+        layout.addWidget(flow_card)
         return tab
 
     def _build_labeling_tab(self) -> QWidget:
@@ -157,12 +152,12 @@ class ProcessPage(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
 
-        mapping_card = SectionCard("编号映射表", "维护设备编号与类型标签、个体标签的对应关系。")
+        mapping_card = SectionCard("编号映射", "维护设备与标签关系。", compact=True)
         mapping_table = QTableWidget(3, 4)
         mapping_table.setHorizontalHeaderLabels(["设备编号", "类型标签", "个体标签", "备注"])
         mapping_table.horizontalHeader().setStretchLastSection(True)
@@ -186,12 +181,12 @@ class ProcessPage(QWidget):
         mapping_card.body_layout.addLayout(mapping_buttons)
         top_row.addWidget(mapping_card, 2)
 
-        label_card = SectionCard("样本标注", "类型标签与个体标签独立维护。")
+        label_card = SectionCard("样本标注", "按设备与状态筛选样本。", compact=True)
 
         mode_row = QHBoxLayout()
-        type_radio = QRadioButton("类型识别标注")
+        type_radio = QRadioButton("类型识别")
         type_radio.setChecked(True)
-        individual_radio = QRadioButton("个体识别标注")
+        individual_radio = QRadioButton("个体识别")
         mode_row.addWidget(type_radio)
         mode_row.addWidget(individual_radio)
         mode_row.addStretch(1)
@@ -248,12 +243,17 @@ class ProcessPage(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
 
-        build_card = SectionCard("划分配置", "设置训练、验证、测试比例和任务划分策略。")
+        build_card = SectionCard(
+            "划分配置",
+            "设置分集比例和划分策略。",
+            right_widget=StatusBadge("版本 v003", "warning", size="sm"),
+            compact=True,
+        )
 
         mode_row = QHBoxLayout()
         type_radio = QRadioButton("类型识别")
@@ -293,9 +293,7 @@ class ProcessPage(QWidget):
         action_row = QHBoxLayout()
         generate_button = QPushButton("生成数据集")
         generate_button.setObjectName("PrimaryButton")
-        dataset_badge = StatusBadge("版本 v003", "warning")
         action_row.addWidget(generate_button)
-        action_row.addWidget(dataset_badge)
         action_row.addStretch(1)
 
         build_card.body_layout.addLayout(mode_row)
@@ -303,7 +301,7 @@ class ProcessPage(QWidget):
         build_card.body_layout.addLayout(action_row)
         top_row.addWidget(build_card, 2)
 
-        result_card = SectionCard("划分结果预览", "显示各类别或个体在不同分集中的样本分布。")
+        result_card = SectionCard("划分结果", "查看各分集样本数量。", compact=True)
         result_table = QTableWidget(4, 4)
         result_table.setHorizontalHeaderLabels(["类别 / 个体", "训练集", "验证集", "测试集"])
         result_table.horizontalHeader().setStretchLastSection(True)
@@ -322,7 +320,7 @@ class ProcessPage(QWidget):
         result_card.body_layout.addWidget(result_table)
         top_row.addWidget(result_card, 3)
 
-        history_card = SectionCard("历史数据集版本", "保留版本号、任务类型和样本统计信息。")
+        history_card = SectionCard("历史版本", "显示已生成数据集。", compact=True)
         history_table = QTableWidget(3, 5)
         history_table.setHorizontalHeaderLabels(["版本号", "任务类型", "训练样本", "策略", "创建时间"])
         history_table.horizontalHeader().setStretchLastSection(True)

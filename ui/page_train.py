@@ -38,23 +38,21 @@ class TrainPage(QWidget):
         container = QWidget()
         content_layout = QVBoxLayout(container)
         content_layout.setContentsMargins(6, 6, 6, 6)
-        content_layout.setSpacing(18)
-
-        content_layout.addWidget(self._build_config_card())
+        content_layout.setSpacing(16)
 
         metrics_row = QHBoxLayout()
-        metrics_row.setSpacing(14)
-        metrics_row.addWidget(MetricCard("准确率", "94.7%", "训练完成后显示主要评估指标。"))
-        metrics_row.addWidget(MetricCard("F1 分数", "0.942", "统一显示准确率、F1、精确率和耗时。", "#19C584"))
-        metrics_row.addWidget(MetricCard("训练耗时", "27 min", "训练结束后记录任务总耗时。", "#FFA726"))
-        metrics_row.addWidget(MetricCard("任务模型", "IQCNN_v3", "显示当前任务对应的模型名称。", "#0097E6"))
+        metrics_row.setSpacing(12)
+        metrics_row.addWidget(MetricCard("最新精度", "94.7%", compact=True))
+        metrics_row.addWidget(MetricCard("F1 分数", "0.942", accent_color="#7CB98B", compact=True))
+        metrics_row.addWidget(MetricCard("任务模型", "IQCNN_v3", accent_color="#C59A63", compact=True))
         content_layout.addLayout(metrics_row)
+
+        content_layout.addWidget(self._build_config_card())
 
         lower_row = QHBoxLayout()
         lower_row.setSpacing(14)
         lower_row.addWidget(self._build_results_card(), 3)
         lower_row.addWidget(self._build_inference_card(), 2)
-
         content_layout.addLayout(lower_row)
         content_layout.addStretch(1)
 
@@ -66,8 +64,9 @@ class TrainPage(QWidget):
 
         section = SectionCard(
             "训练配置",
-            "按任务类型切换训练路径，统一管理模型参数和数据集版本。",
-            right_widget=StatusBadge("待启动", "success"),
+            "选择任务类型、数据集版本和训练参数。",
+            right_widget=StatusBadge("待启动", "info", size="sm"),
+            compact=True,
         )
 
         switch_row = QHBoxLayout()
@@ -81,7 +80,7 @@ class TrainPage(QWidget):
 
         switch_row.addWidget(QLabel("任务类型"))
         switch_row.addWidget(self.task_type_box)
-        switch_row.addSpacing(12)
+        switch_row.addSpacing(10)
         switch_row.addWidget(QLabel("数据集版本"))
         switch_row.addWidget(self.dataset_box)
         switch_row.addStretch(1)
@@ -173,13 +172,10 @@ class TrainPage(QWidget):
     def _build_results_card(self) -> SectionCard:
         """Create the unified results display card."""
 
-        section = SectionCard(
-            "结果评估",
-            "训练完成后统一显示指标、混淆矩阵和分类明细。",
-        )
+        section = SectionCard("结果评估", "显示训练结果和分类明细。", compact=True)
 
         summary_row = QHBoxLayout()
-        summary_row.setSpacing(14)
+        summary_row.setSpacing(12)
 
         confusion_placeholder = QPlainTextEdit()
         confusion_placeholder.setReadOnly(True)
@@ -226,7 +222,9 @@ class TrainPage(QWidget):
 
         section = SectionCard(
             "单样本校验",
-            "用于加载样本并查看当前模型的识别结果。",
+            "加载样本并查看当前模型输出。",
+            right_widget=StatusBadge("结果: DJI_Mavic3", "success", size="sm"),
+            compact=True,
         )
 
         form_layout = QFormLayout()
@@ -261,7 +259,6 @@ class TrainPage(QWidget):
             for column, value in enumerate(row_data):
                 probability_table.setItem(row_index, column, QTableWidgetItem(value))
 
-        result_badge = StatusBadge("识别结果: DJI_Mavic3", "success")
         button_row = QHBoxLayout()
         load_button = QPushButton("加载样本")
         run_button = QPushButton("开始识别")
@@ -271,7 +268,6 @@ class TrainPage(QWidget):
         button_row.addStretch(1)
 
         section.body_layout.addLayout(form_layout)
-        section.body_layout.addWidget(result_badge)
         section.body_layout.addLayout(button_row)
         section.body_layout.addWidget(probability_table)
         return section

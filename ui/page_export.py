@@ -37,13 +37,13 @@ class ExportPage(QWidget):
         container = QWidget()
         content_layout = QVBoxLayout(container)
         content_layout.setContentsMargins(6, 6, 6, 6)
-        content_layout.setSpacing(18)
+        content_layout.setSpacing(16)
 
         metrics_row = QHBoxLayout()
-        metrics_row.setSpacing(14)
-        metrics_row.addWidget(MetricCard("导出格式", "ONNX", "支持导出 ONNX，并可保留原始模型文件。"))
-        metrics_row.addWidget(MetricCard("精度校核", "< 0.5%", "对比原模型与 ONNX Runtime 的精度偏差。", "#19C584"))
-        metrics_row.addWidget(MetricCard("交付包", "README + Python", "同时生成配置、映射和推理脚本。", "#FFA726"))
+        metrics_row.setSpacing(12)
+        metrics_row.addWidget(MetricCard("导出格式", "ONNX", compact=True))
+        metrics_row.addWidget(MetricCard("校核偏差", "0.2%", accent_color="#7CB98B", compact=True))
+        metrics_row.addWidget(MetricCard("交付包", "4 项文件", accent_color="#C59A63", compact=True))
         content_layout.addLayout(metrics_row)
 
         upper_row = QHBoxLayout()
@@ -61,10 +61,7 @@ class ExportPage(QWidget):
     def _build_selection_card(self) -> SectionCard:
         """Create the model selection and detail card."""
 
-        section = SectionCard(
-            "模型选择",
-            "导出前确认任务类型、算法和数据集版本。",
-        )
+        section = SectionCard("模型选择", "确认当前导出对象。", compact=True)
 
         self.model_box = QComboBox()
         self.model_box.addItems(
@@ -103,8 +100,9 @@ class ExportPage(QWidget):
 
         section = SectionCard(
             "导出配置",
-            "设置导出目录、导出格式和附带文件。",
-            right_widget=StatusBadge("待导出", "success"),
+            "设置导出路径和附带文件。",
+            right_widget=StatusBadge("待导出", "info", size="sm"),
+            compact=True,
         )
 
         form_layout = QFormLayout()
@@ -128,6 +126,7 @@ class ExportPage(QWidget):
         self.include_mapping.setChecked(True)
 
         option_column = QVBoxLayout()
+        option_column.setSpacing(8)
         for checkbox in [
             self.include_readme,
             self.include_example,
@@ -152,10 +151,16 @@ class ExportPage(QWidget):
     def _build_result_card(self) -> SectionCard:
         """Create the export result display card."""
 
-        section = SectionCard(
-            "交付结果",
-            "显示导出文件列表和精度校核结果。",
-        )
+        section = SectionCard("交付结果", "显示导出文件与校核状态。", compact=True)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        status_row.addWidget(StatusBadge("校核通过", "success", size="sm"))
+
+        drift_label = QLabel("原模型 94.7% | ONNX Runtime 94.5% | 偏差 0.2%")
+        drift_label.setObjectName("MutedText")
+        status_row.addWidget(drift_label)
+        status_row.addStretch(1)
 
         result_table = QTableWidget(5, 3)
         result_table.setHorizontalHeaderLabels(["文件名", "类型", "备注"])
@@ -173,13 +178,7 @@ class ExportPage(QWidget):
             for column, value in enumerate(row_data):
                 result_table.setItem(row_index, column, QTableWidgetItem(value))
 
-        summary_label = QLabel(
-            "校核摘要：原模型准确率 94.7%，ONNX Runtime 准确率 94.5%，偏差 0.2%，满足交付要求。"
-        )
-        summary_label.setObjectName("MutedText")
-        summary_label.setWordWrap(True)
-
-        section.body_layout.addWidget(summary_label)
+        section.body_layout.addLayout(status_row)
         section.body_layout.addWidget(result_table)
         return section
 

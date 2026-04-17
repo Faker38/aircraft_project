@@ -8,11 +8,6 @@ from pathlib import Path
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-try:
-    from qt_material import apply_stylesheet as apply_material_stylesheet
-except ImportError:
-    apply_material_stylesheet = None
-
 
 ICON_DIR = Path(__file__).resolve().parents[1] / "resources" / "icons"
 
@@ -21,16 +16,18 @@ ICON_DIR = Path(__file__).resolve().parents[1] / "resources" / "icons"
 class ThemeTokens:
     """Shared color and spacing tokens for the desktop UI."""
 
-    bg: str = "#08111B"
-    bg_alt: str = "#0D1826"
-    panel: str = "#111F30"
-    panel_alt: str = "#17283C"
-    border: str = "rgba(125, 213, 252, 0.12)"
-    border_strong: str = "rgba(0, 217, 255, 0.24)"
-    text: str = "#E9F4FF"
-    text_muted: str = "#97AFC2"
-    accent: str = "#00D9FF"
-    accent_dark: str = "#0097E6"
+    bg: str = "#0E151D"
+    bg_alt: str = "#131C26"
+    sidebar: str = "#111923"
+    panel: str = "#18232F"
+    panel_alt: str = "#1D2A38"
+    panel_subtle: str = "#15202B"
+    border: str = "rgba(255, 255, 255, 0.08)"
+    border_soft: str = "rgba(255, 255, 255, 0.05)"
+    text: str = "#E6EDF5"
+    text_muted: str = "#94A5B5"
+    accent: str = "#5EA6D3"
+    accent_dark: str = "#467FAD"
     mono: str = "Consolas"
 
 
@@ -56,10 +53,6 @@ class AppStyles:
         palette.setColor(QPalette.ColorRole.Highlight, QColor(cls.TOKENS.accent_dark))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor(cls.TOKENS.text))
         app.setPalette(palette)
-
-        if apply_material_stylesheet is not None:
-            apply_material_stylesheet(app, theme="dark_cyan.xml")
-
         app.setStyleSheet(cls._build_stylesheet())
 
     @classmethod
@@ -72,7 +65,7 @@ class AppStyles:
         return f"""
         * {{
             color: {t.text};
-            selection-background-color: rgba(0, 217, 255, 0.22);
+            selection-background-color: rgba(94, 166, 211, 0.22);
             selection-color: {t.text};
         }}
         QWidget {{
@@ -88,189 +81,155 @@ class AppStyles:
             background: transparent;
         }}
         QStatusBar {{
-            background-color: rgba(8, 17, 27, 0.92);
+            background-color: {t.bg};
             color: {t.text_muted};
-            border-top: 1px solid {t.border};
+            border-top: 1px solid {t.border_soft};
         }}
         QStatusBar::item {{
             border: none;
         }}
         QFrame#Sidebar {{
-            background-color: rgba(7, 15, 23, 0.92);
-            border-right: 1px solid {t.border};
+            background-color: {t.sidebar};
+            border-right: 1px solid {t.border_soft};
         }}
         QFrame#HeaderPanel {{
-            background-color: rgba(10, 20, 31, 0.90);
+            background-color: {t.panel_subtle};
             border: 1px solid {t.border};
-            border-radius: 18px;
+            border-radius: 12px;
         }}
-        QFrame#HeaderInfoPanel {{
-            background-color: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.07);
-            border-radius: 14px;
+        QFrame#HeaderStatusStrip {{
+            background-color: rgba(255, 255, 255, 0.02);
+            border: 1px solid {t.border_soft};
+            border-radius: 10px;
         }}
-        QFrame#HeroPanel {{
-            background-color: qlineargradient(
-                x1: 0, y1: 0, x2: 1, y2: 1,
-                stop: 0 rgba(0, 217, 255, 0.16),
-                stop: 0.48 rgba(9, 26, 42, 0.94),
-                stop: 1 rgba(0, 151, 230, 0.14)
-            );
-            border: 1px solid {t.border_strong};
-            border-radius: 24px;
-        }}
-        QFrame#CardPanel, QFrame#MetricCard, QFrame#StepCard, QFrame#InfoPanel {{
-            background-color: rgba(17, 31, 48, 0.96);
+        QFrame#CardPanel, QFrame#MetricCard, QFrame#InfoPanel, QFrame#StepCard,
+        QFrame#SummaryPanel, QFrame#WorkflowEntryCard {{
+            background-color: {t.panel};
             border: 1px solid {t.border};
-            border-radius: 18px;
+            border-radius: 12px;
+        }}
+        QFrame#MetricCard {{
+            min-height: 84px;
+        }}
+        QFrame#WorkflowEntryCard {{
+            background-color: {t.panel_subtle};
         }}
         QLabel#AppTitle {{
-            font-size: 18pt;
+            font-size: 16pt;
             font-weight: 700;
         }}
         QLabel#AppSubTitle {{
             color: {t.text_muted};
-            font-size: 10pt;
+            font-size: 9.5pt;
         }}
         QLabel#PageTitle {{
-            font-size: 18pt;
+            font-size: 17pt;
             font-weight: 700;
         }}
         QLabel#PageDescription {{
             color: {t.text_muted};
         }}
-        QLabel#HeaderMetaLabel {{
+        QLabel#HeaderMetaLabel, QLabel#SidebarSection, QLabel#FieldLabel, QLabel#SummaryKey {{
             color: {t.text_muted};
             font-size: 8.5pt;
             font-weight: 600;
+            letter-spacing: 0.6px;
         }}
-        QLabel#HeaderMetaValue {{
-            font-family: "{t.mono}";
+        QLabel#HeaderMetaValue, QLabel#ValueLabel, QLabel#SummaryValue {{
             color: {t.text};
-            font-size: 10.5pt;
+            font-size: 10pt;
             font-weight: 600;
         }}
-        QLabel#HeroEyebrow {{
-            color: {t.accent};
-            font-weight: 700;
-            letter-spacing: 1px;
-        }}
-        QLabel#HeroTitle {{
-            font-size: 22pt;
-            font-weight: 700;
-        }}
-        QLabel#HeroDescription {{
-            color: {t.text_muted};
-            font-size: 10.5pt;
+        QLabel#HeaderMetaValue, QLabel#ValueLabel {{
+            font-family: "{t.mono}";
         }}
         QLabel#SectionTitle {{
-            font-size: 12.5pt;
+            font-size: 11.5pt;
             font-weight: 700;
         }}
-        QLabel#SectionDescription {{
+        QLabel#SectionDescription, QLabel#MetricNote, QLabel#MutedText, QLabel#HintText,
+        QLabel#FlowHint, QLabel#StepDescription {{
             color: {t.text_muted};
         }}
         QLabel#MetricTitle {{
             color: {t.text_muted};
-            font-size: 9.5pt;
+            font-size: 9pt;
             font-weight: 600;
         }}
         QLabel#MetricValue {{
-            font-size: 18pt;
+            font-size: 16pt;
             font-weight: 700;
-        }}
-        QLabel#MetricNote {{
-            color: {t.text_muted};
-            font-size: 9pt;
         }}
         QLabel#MonoText {{
             font-family: "{t.mono}";
-            color: {t.accent};
+            color: {t.text};
             font-size: 10pt;
         }}
-        QLabel#StepIndex {{
+        QLabel#StepTitle, QLabel#FlowTitle {{
+            font-size: 10.8pt;
+            font-weight: 700;
+        }}
+        QLabel#StepIndex, QLabel#FlowIndex {{
             color: {t.accent};
             font-family: "{t.mono}";
-            font-size: 13pt;
+            font-size: 11pt;
             font-weight: 700;
-        }}
-        QLabel#StepTitle {{
-            font-size: 12pt;
-            font-weight: 700;
-        }}
-        QLabel#StepDescription, QLabel#HintText, QLabel#MutedText {{
-            color: {t.text_muted};
-        }}
-        QLabel#FieldLabel {{
-            color: {t.text_muted};
-            font-size: 9pt;
-            font-weight: 600;
-        }}
-        QLabel#ValueLabel {{
-            font-family: "{t.mono}";
-            color: {t.text};
-        }}
-        QLabel#SidebarSection {{
-            color: {t.text_muted};
-            font-size: 8.5pt;
-            font-weight: 700;
-            letter-spacing: 1px;
         }}
         QPushButton {{
             background-color: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-            padding: 10px 16px;
+            border-radius: 10px;
+            padding: 9px 14px;
             font-weight: 600;
         }}
         QPushButton:hover {{
-            background-color: rgba(0, 217, 255, 0.10);
-            border: 1px solid rgba(0, 217, 255, 0.28);
+            background-color: rgba(94, 166, 211, 0.10);
+            border: 1px solid rgba(94, 166, 211, 0.22);
         }}
         QPushButton#PrimaryButton {{
-            background-color: rgba(0, 217, 255, 0.16);
-            border: 1px solid rgba(0, 217, 255, 0.42);
+            background-color: rgba(94, 166, 211, 0.18);
+            border: 1px solid rgba(94, 166, 211, 0.32);
         }}
         QPushButton#DangerButton {{
-            background-color: rgba(255, 82, 82, 0.14);
-            border: 1px solid rgba(255, 82, 82, 0.28);
+            background-color: rgba(160, 74, 74, 0.18);
+            border: 1px solid rgba(184, 88, 88, 0.28);
         }}
         QPushButton#NavButton {{
             text-align: left;
-            padding: 12px 14px;
-            border-radius: 14px;
+            padding: 10px 12px;
+            border-radius: 10px;
             background-color: transparent;
             border: 1px solid transparent;
             font-size: 10.5pt;
         }}
         QPushButton#NavButton:hover {{
-            background-color: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            background-color: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
         }}
         QPushButton#NavButton:checked {{
-            background-color: rgba(0, 217, 255, 0.16);
-            border: 1px solid rgba(0, 217, 255, 0.34);
+            background-color: rgba(94, 166, 211, 0.14);
+            border: 1px solid rgba(94, 166, 211, 0.22);
         }}
         QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-            background-color: rgba(255, 255, 255, 0.03);
+            background-color: rgba(255, 255, 255, 0.025);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
+            border-radius: 10px;
             padding: 8px 10px;
-            min-height: 20px;
+            min-height: 18px;
         }}
         QSpinBox, QDoubleSpinBox {{
             padding-right: 30px;
         }}
         QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus,
         QSpinBox:focus, QDoubleSpinBox:focus {{
-            border: 1px solid rgba(0, 217, 255, 0.38);
+            border: 1px solid rgba(94, 166, 211, 0.30);
         }}
         QSpinBox::up-button, QDoubleSpinBox::up-button {{
             subcontrol-origin: border;
             subcontrol-position: top right;
             width: 22px;
             border-left: 1px solid rgba(255, 255, 255, 0.08);
-            border-top-right-radius: 12px;
+            border-top-right-radius: 10px;
             background-color: rgba(255, 255, 255, 0.02);
         }}
         QSpinBox::down-button, QDoubleSpinBox::down-button {{
@@ -279,12 +238,12 @@ class AppStyles:
             width: 22px;
             border-left: 1px solid rgba(255, 255, 255, 0.08);
             border-top: 1px solid rgba(255, 255, 255, 0.06);
-            border-bottom-right-radius: 12px;
+            border-bottom-right-radius: 10px;
             background-color: rgba(255, 255, 255, 0.02);
         }}
         QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
         QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
-            background-color: rgba(0, 217, 255, 0.10);
+            background-color: rgba(94, 166, 211, 0.12);
         }}
         QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
             image: url("{up_arrow}");
@@ -307,20 +266,20 @@ class AppStyles:
         }}
         QComboBox QAbstractItemView {{
             background-color: {t.panel_alt};
-            selection-background-color: rgba(0, 217, 255, 0.18);
+            selection-background-color: rgba(94, 166, 211, 0.18);
             border: 1px solid {t.border};
             outline: none;
         }}
         QTabWidget::pane {{
             border: 1px solid {t.border};
-            border-radius: 18px;
+            border-radius: 12px;
             top: -1px;
-            background: rgba(17, 31, 48, 0.95);
+            background: {t.panel};
         }}
         QTabBar::tab {{
             background: transparent;
             color: {t.text_muted};
-            padding: 10px 16px;
+            padding: 10px 14px;
             margin-right: 6px;
             border-bottom: 2px solid transparent;
         }}
@@ -329,18 +288,18 @@ class AppStyles:
             border-bottom: 2px solid {t.accent};
         }}
         QProgressBar {{
-            border-radius: 10px;
-            background-color: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+            background-color: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.06);
             text-align: center;
-            min-height: 18px;
+            min-height: 16px;
         }}
         QProgressBar::chunk {{
-            border-radius: 9px;
+            border-radius: 7px;
             background-color: {t.accent_dark};
         }}
         QHeaderView::section {{
-            background-color: rgba(255, 255, 255, 0.03);
+            background-color: rgba(255, 255, 255, 0.025);
             color: {t.text_muted};
             padding: 10px 8px;
             border: none;
@@ -348,29 +307,32 @@ class AppStyles:
             font-weight: 600;
         }}
         QTableWidget, QTreeWidget, QListWidget {{
-            background-color: rgba(255, 255, 255, 0.025);
-            alternate-background-color: rgba(255, 255, 255, 0.04);
+            background-color: rgba(255, 255, 255, 0.018);
+            alternate-background-color: rgba(255, 255, 255, 0.032);
             border: 1px solid rgba(255, 255, 255, 0.07);
-            border-radius: 14px;
-            gridline-color: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            gridline-color: rgba(255, 255, 255, 0.04);
         }}
         QTableWidget::item, QTreeWidget::item, QListWidget::item {{
             padding: 8px;
         }}
         QTableWidget::item:selected, QTreeWidget::item:selected, QListWidget::item:selected {{
-            background-color: rgba(0, 217, 255, 0.14);
+            background-color: rgba(94, 166, 211, 0.14);
         }}
         QGroupBox {{
             border: 1px solid rgba(255, 255, 255, 0.07);
-            border-radius: 16px;
+            border-radius: 10px;
             margin-top: 12px;
-            padding: 14px 14px 10px 14px;
+            padding: 12px 12px 10px 12px;
             font-weight: 700;
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 16px;
+            left: 14px;
             padding: 0 6px;
             color: {t.text};
+        }}
+        QCheckBox, QRadioButton {{
+            spacing: 8px;
         }}
         """

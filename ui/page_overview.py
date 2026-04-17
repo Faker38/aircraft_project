@@ -26,6 +26,8 @@ class OverviewPage(QWidget):
         """Initialize the overview page."""
 
         super().__init__(parent)
+        self._device_connected = False
+
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -33,154 +35,98 @@ class OverviewPage(QWidget):
         scroll_area.setWidgetResizable(True)
 
         container = QWidget()
-        self.content_layout = QVBoxLayout(container)
-        self.content_layout.setContentsMargins(6, 6, 6, 6)
-        self.content_layout.setSpacing(18)
+        content_layout = QVBoxLayout(container)
+        content_layout.setContentsMargins(6, 6, 6, 6)
+        content_layout.setSpacing(16)
 
-        self.content_layout.addWidget(self._build_hero_panel())
-        self.content_layout.addLayout(self._build_metrics_row())
-        self.content_layout.addWidget(self._build_workflow_section())
-        self.content_layout.addWidget(self._build_readiness_section())
-        self.content_layout.addStretch(1)
+        content_layout.addWidget(self._build_summary_section())
+        content_layout.addWidget(self._build_workflow_section())
+        content_layout.addWidget(self._build_metrics_section())
+        content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
-    def _build_hero_panel(self) -> QFrame:
-        """Create the hero panel shown at the top of the overview."""
+        self._refresh_device_state()
 
-        panel = QFrame()
-        panel.setObjectName("HeroPanel")
-
-        layout = QHBoxLayout(panel)
-        layout.setContentsMargins(26, 24, 26, 24)
-        layout.setSpacing(22)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(10)
-
-        eyebrow = QLabel("工程总览")
-        eyebrow.setObjectName("HeroEyebrow")
-
-        title = QLabel("无人机射频识别任务链路")
-        title.setObjectName("HeroTitle")
-        title.setWordWrap(True)
-
-        description = QLabel(
-            "本页汇总设备接入、数据流转、训练评估和模型交付状态，"
-            "用于联调验证与项目展示。"
-        )
-        description.setObjectName("HeroDescription")
-        description.setWordWrap(True)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
-
-        capture_button = QPushButton("打开采集模块")
-        capture_button.setObjectName("PrimaryButton")
-        capture_button.clicked.connect(lambda: self.navigate_requested.emit("capture"))
-
-        train_button = QPushButton("打开训练模块")
-        train_button.clicked.connect(lambda: self.navigate_requested.emit("train"))
-
-        button_row.addWidget(capture_button)
-        button_row.addWidget(train_button)
-        button_row.addStretch(1)
-
-        text_layout.addWidget(eyebrow)
-        text_layout.addWidget(title)
-        text_layout.addWidget(description)
-        text_layout.addLayout(button_row)
-        layout.addLayout(text_layout, 3)
-
-        side_panel = QFrame()
-        side_panel.setObjectName("InfoPanel")
-
-        side_layout = QVBoxLayout(side_panel)
-        side_layout.setContentsMargins(20, 18, 20, 18)
-        side_layout.setSpacing(10)
-
-        status_badge = StatusBadge("联调阶段", "success")
-        side_layout.addWidget(status_badge, 0, Qt.AlignmentFlag.AlignLeft)
-
-        signal_chain_title = QLabel("工程阶段")
-        signal_chain_title.setObjectName("SectionTitle")
-        side_layout.addWidget(signal_chain_title)
-
-        for text in [
-            "1. 界面基线与交互规范",
-            "2. 设备接入与记录控制",
-            "3. 处理链路与训练联调",
-            "4. 实装设备与文件格式适配",
-        ]:
-            item = QLabel(text)
-            item.setObjectName("MutedText")
-            item.setWordWrap(True)
-            side_layout.addWidget(item)
-
-        side_layout.addStretch(1)
-        layout.addWidget(side_panel, 2)
-        return panel
-
-    def _build_metrics_row(self) -> QHBoxLayout:
-        """Build the summary metric cards row."""
-
-        layout = QHBoxLayout()
-        layout.setSpacing(14)
-
-        cards = [
-            MetricCard("设备接口", "LAN / VISA", "RJ45 远程接入，默认端口 5025。", "#00D9FF"),
-            MetricCard("数据载体", ".cap / .npy", "原始文件、IQ 样本和特征文件分层存储。", "#19C584"),
-            MetricCard("训练路径", "ML / DL", "类型识别与个体识别分别配置。", "#FFA726"),
-            MetricCard("交付格式", "ONNX", "导出模型时同步生成配置与推理脚本。", "#0097E6"),
-        ]
-        for card in cards:
-            layout.addWidget(card)
-        return layout
-
-    def _build_workflow_section(self) -> SectionCard:
-        """Build the workflow step section."""
+    def _build_summary_section(self) -> SectionCard:
+        """Create the overview summary section."""
 
         section = SectionCard(
-            "任务链路",
-            "按业务顺序组织模块，便于切换、联调和状态查看。",
+            "任务总览",
+            "当前任务按采集、处理、训练、导出四个步骤组织。",
+            right_widget=StatusBadge("步骤 1 就绪", "info", size="sm"),
+            compact=True,
+        )
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(12)
+
+        self.device_value_label = QLabel()
+        self.device_value_label.setObjectName("SummaryValue")
+
+        stage_value = QLabel("数据采集")
+        stage_value.setObjectName("SummaryValue")
+
+        version_value = QLabel("v003")
+        version_value.setObjectName("SummaryValue")
+
+        summary_rows = [
+            ("设备状态", self.device_value_label),
+            ("当前阶段", stage_value),
+            ("数据集版本", version_value),
+        ]
+
+        for row, (label_text, value_widget) in enumerate(summary_rows):
+            key_label = QLabel(label_text)
+            key_label.setObjectName("SummaryKey")
+            grid.addWidget(key_label, row, 0)
+            grid.addWidget(value_widget, row, 1)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+
+        primary_button = QPushButton("进入数据采集")
+        primary_button.setObjectName("PrimaryButton")
+        primary_button.clicked.connect(lambda: self.navigate_requested.emit("capture"))
+
+        hint_label = QLabel("首屏仅保留任务状态和模块入口。")
+        hint_label.setObjectName("MutedText")
+
+        action_row.addWidget(primary_button, 0, Qt.AlignmentFlag.AlignLeft)
+        action_row.addWidget(hint_label)
+        action_row.addStretch(1)
+
+        section.body_layout.addLayout(grid)
+        section.body_layout.addLayout(action_row)
+        return section
+
+    def _build_workflow_section(self) -> SectionCard:
+        """Build the lightweight workflow entry section."""
+
+        section = SectionCard(
+            "流程入口",
+            "按任务步骤进入对应模块。",
+            compact=True,
         )
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(14)
 
-        steps: list[tuple[str, str, str, list[str]]] = [
-            (
-                "capture",
-                "01 / 数据采集",
-                "连接 3943B，设置参数并保存原始数据文件。",
-                ["设备接入", "参数配置", "采集记录"],
-            ),
-            (
-                "process",
-                "02 / 信号处理",
-                "生成 IQ 样本，完成标注和数据集构建。",
-                ["处理链路", "标注管理", "数据集版本"],
-            ),
-            (
-                "train",
-                "03 / 模型训练",
-                "配置训练任务并完成结果评估。",
-                ["训练配置", "评估指标", "单样本校验"],
-            ),
-            (
-                "export",
-                "04 / 模型导出",
-                "导出模型文件及配套交付内容。",
-                ["模型信息", "导出配置", "交付结果"],
-            ),
+        steps = [
+            ("capture", "01", "数据采集", "待执行", "设备接入与记录控制"),
+            ("process", "02", "信号处理", "待处理", "样本切片、标注和数据集构建"),
+            ("train", "03", "模型训练", "可训练", "训练配置与结果评估"),
+            ("export", "04", "模型导出", "待导出", "模型导出与交付文件生成"),
         ]
 
-        for index, (page_key, title, description, bullets) in enumerate(steps):
+        for index, (page_key, step_no, title, state, hint) in enumerate(steps):
             row = index // 2
             column = index % 2
-            grid.addWidget(self._build_step_card(page_key, title, description, bullets), row, column)
+            grid.addWidget(self._build_step_card(page_key, step_no, title, state, hint), row, column)
 
         section.body_layout.addLayout(grid)
         return section
@@ -188,80 +134,73 @@ class OverviewPage(QWidget):
     def _build_step_card(
         self,
         page_key: str,
+        step_no: str,
         title: str,
-        description: str,
-        bullets: list[str],
+        state: str,
+        hint: str,
     ) -> QFrame:
-        """Create a single workflow step card."""
+        """Create a compact workflow entry card."""
 
         card = QFrame()
-        card.setObjectName("StepCard")
+        card.setObjectName("WorkflowEntryCard")
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
-        index_label = QLabel(title.split("/")[0].strip())
-        index_label.setObjectName("StepIndex")
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(10)
 
-        title_label = QLabel(title.split("/", 1)[1].strip())
-        title_label.setObjectName("StepTitle")
+        index_label = QLabel(step_no)
+        index_label.setObjectName("FlowIndex")
 
-        description_label = QLabel(description)
-        description_label.setObjectName("StepDescription")
-        description_label.setWordWrap(True)
+        title_label = QLabel(title)
+        title_label.setObjectName("FlowTitle")
 
-        layout.addWidget(index_label)
-        layout.addWidget(title_label)
-        layout.addWidget(description_label)
+        header_row.addWidget(index_label)
+        header_row.addWidget(title_label)
+        header_row.addStretch(1)
 
-        for bullet in bullets:
-            bullet_label = QLabel(f"• {bullet}")
-            bullet_label.setObjectName("MutedText")
-            layout.addWidget(bullet_label)
+        state_badge = StatusBadge(state, "info", size="sm")
+        hint_label = QLabel(hint)
+        hint_label.setObjectName("FlowHint")
+        hint_label.setWordWrap(True)
 
-        open_button = QPushButton("打开模块")
-        open_button.clicked.connect(lambda: self.navigate_requested.emit(page_key))
+        open_button = QPushButton("进入模块")
+        open_button.clicked.connect(lambda checked=False, key=page_key: self.navigate_requested.emit(key))
+
+        layout.addLayout(header_row)
+        layout.addWidget(state_badge, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(hint_label)
         layout.addWidget(open_button, 0, Qt.AlignmentFlag.AlignLeft)
-
+        layout.addStretch(1)
         return card
 
-    def _build_readiness_section(self) -> SectionCard:
-        """Create the project readiness summary section."""
+    def _build_metrics_section(self) -> SectionCard:
+        """Build the compact key metrics section."""
 
-        section = SectionCard(
-            "当前状态",
-            "当前版本已完成流程组织、信息层级和后续模块接入接口。",
-        )
+        section = SectionCard("关键指标", "显示当前工程常用指标。", compact=True)
 
         row = QHBoxLayout()
-        row.setSpacing(14)
-
-        readiness_cards = [
-            ("流程闭环", "采集、处理、训练和交付按任务顺序独立组织。"),
-            ("状态清晰", "深色界面、青蓝高亮和卡片布局统一。"),
-            ("便于扩展", "后续接入线程、数据库和设备服务时无需重构界面。"),
-        ]
-
-        for title, description in readiness_cards:
-            card = QFrame()
-            card.setObjectName("InfoPanel")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(18, 18, 18, 18)
-            card_layout.setSpacing(10)
-
-            badge = StatusBadge("已落实", "success")
-            heading = QLabel(title)
-            heading.setObjectName("StepTitle")
-
-            detail = QLabel(description)
-            detail.setObjectName("MutedText")
-            detail.setWordWrap(True)
-
-            card_layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignLeft)
-            card_layout.addWidget(heading)
-            card_layout.addWidget(detail)
-            row.addWidget(card)
+        row.setSpacing(12)
+        row.addWidget(MetricCard("数据集版本", "v003", compact=True))
+        row.addWidget(MetricCard("最新模型精度", "94.7%", accent_color="#7CB98B", compact=True))
+        row.addWidget(MetricCard("交付格式", "ONNX", accent_color="#C59A63", compact=True))
 
         section.body_layout.addLayout(row)
         return section
+
+    def set_device_connected(self, connected: bool) -> None:
+        """Refresh the device status shown on the overview page."""
+
+        self._device_connected = connected
+        self._refresh_device_state()
+
+    def _refresh_device_state(self) -> None:
+        """Update summary labels based on the current mocked device state."""
+
+        if self._device_connected:
+            self.device_value_label.setText("3943B 已接入")
+        else:
+            self.device_value_label.setText("3943B 未接入")
