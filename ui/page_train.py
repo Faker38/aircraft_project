@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -19,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.widgets import MetricCard, SectionCard, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class TrainPage(QWidget):
@@ -32,8 +31,7 @@ class TrainPage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        scroll_area = SmoothScrollArea()
 
         container = QWidget()
         content_layout = QVBoxLayout(container)
@@ -184,6 +182,7 @@ class TrainPage(QWidget):
             "后续接入 Matplotlib 或 seaborn 画布。"
         )
         confusion_placeholder.setMinimumHeight(240)
+        configure_scrollable(confusion_placeholder)
 
         training_log = QPlainTextEdit()
         training_log.setReadOnly(True)
@@ -194,6 +193,7 @@ class TrainPage(QWidget):
             "最优权重已归档至 data/models/"
         )
         training_log.setMinimumHeight(240)
+        configure_scrollable(training_log)
 
         summary_row.addWidget(confusion_placeholder, 2)
         summary_row.addWidget(training_log, 1)
@@ -203,6 +203,7 @@ class TrainPage(QWidget):
         detail_table.horizontalHeader().setStretchLastSection(True)
         detail_table.verticalHeader().setVisible(False)
         detail_table.setAlternatingRowColors(True)
+        configure_scrollable(detail_table)
         rows = [
             ["DJI_Mavic3", "0.96", "0.94", "0.95", "205"],
             ["Autel_EVO", "0.92", "0.90", "0.91", "138"],
@@ -249,6 +250,7 @@ class TrainPage(QWidget):
         probability_table.horizontalHeader().setStretchLastSection(True)
         probability_table.verticalHeader().setVisible(False)
         probability_table.setAlternatingRowColors(True)
+        configure_scrollable(probability_table)
         rows = [
             ["DJI_Mavic3", "73.5%"],
             ["Autel_EVO", "12.4%"],

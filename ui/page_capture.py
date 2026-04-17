@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import DEFAULT_DEVICE_IP, DEFAULT_DEVICE_PORT, RAW_DATA_DIR
-from ui.widgets import MetricCard, SectionCard, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class CapturePage(QWidget):
@@ -41,8 +40,7 @@ class CapturePage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        scroll_area = SmoothScrollArea()
 
         container = QWidget()
         self.content_layout = QVBoxLayout(container)
@@ -196,6 +194,7 @@ class CapturePage(QWidget):
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMaximumHeight(200)
+        configure_scrollable(self.log_output)
 
         section.body_layout.addWidget(self.capture_progress)
         section.body_layout.addLayout(button_row)
@@ -266,6 +265,7 @@ class CapturePage(QWidget):
         self.files_table.verticalHeader().setVisible(False)
         self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        configure_scrollable(self.files_table)
 
         section.body_layout.addWidget(self.files_table)
         return section

@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -18,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import EXPORTS_DIR
-from ui.widgets import MetricCard, SectionCard, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class ExportPage(QWidget):
@@ -31,8 +30,7 @@ class ExportPage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        scroll_area = SmoothScrollArea()
 
         container = QWidget()
         content_layout = QVBoxLayout(container)
@@ -167,6 +165,7 @@ class ExportPage(QWidget):
         result_table.horizontalHeader().setStretchLastSection(True)
         result_table.verticalHeader().setVisible(False)
         result_table.setAlternatingRowColors(True)
+        configure_scrollable(result_table)
         rows = [
             ["model.onnx", "模型", "ONNX 推理模型"],
             ["class_mapping.json", "配置", "类别 ID 到标签映射"],

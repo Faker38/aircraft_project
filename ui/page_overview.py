@@ -9,12 +9,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from ui.widgets import MetricCard, SectionCard, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge
 
 
 class OverviewPage(QWidget):
@@ -31,8 +30,7 @@ class OverviewPage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        scroll_area = SmoothScrollArea()
 
         container = QWidget()
         content_layout = QVBoxLayout(container)

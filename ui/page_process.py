@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.widgets import MetricCard, SectionCard, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class ProcessPage(QWidget):
@@ -35,8 +34,7 @@ class ProcessPage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        scroll_area = SmoothScrollArea()
 
         container = QWidget()
         content_layout = QVBoxLayout(container)
@@ -78,6 +76,7 @@ class ProcessPage(QWidget):
         file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         file_table.setAlternatingRowColors(True)
         file_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        configure_scrollable(file_table)
 
         mock_rows = [
             ["20260415_213011_2400M_20M_drone_001.cap", "drone_001", "180 s", "raw", "2026-04-15 21:30"],
@@ -163,6 +162,7 @@ class ProcessPage(QWidget):
         mapping_table.horizontalHeader().setStretchLastSection(True)
         mapping_table.verticalHeader().setVisible(False)
         mapping_table.setAlternatingRowColors(True)
+        configure_scrollable(mapping_table)
         mapping_rows = [
             ["drone_001", "DJI_Mavic3", "mavic3_001", "甲方样机 A"],
             ["drone_003", "Autel_EVO", "autel_003", "Autel 目标机"],
@@ -209,6 +209,7 @@ class ProcessPage(QWidget):
         sample_table.horizontalHeader().setStretchLastSection(True)
         sample_table.verticalHeader().setVisible(False)
         sample_table.setAlternatingRowColors(True)
+        configure_scrollable(sample_table)
 
         sample_rows = [
             ["1101", "20260415_213011.cap", "drone_001", "18.5 dB", "DJI_Mavic3", "mavic3_001"],
@@ -307,6 +308,7 @@ class ProcessPage(QWidget):
         result_table.horizontalHeader().setStretchLastSection(True)
         result_table.verticalHeader().setVisible(False)
         result_table.setAlternatingRowColors(True)
+        configure_scrollable(result_table)
         result_rows = [
             ["DJI_Mavic3", "480", "103", "102"],
             ["Autel_EVO", "322", "69", "69"],
@@ -326,6 +328,7 @@ class ProcessPage(QWidget):
         history_table.horizontalHeader().setStretchLastSection(True)
         history_table.verticalHeader().setVisible(False)
         history_table.setAlternatingRowColors(True)
+        configure_scrollable(history_table)
         history_rows = [
             ["v001", "类型识别", "1260", "随机分层", "2026-04-09 18:22"],
             ["v002", "个体识别", "980", "个体隔离", "2026-04-13 20:06"],

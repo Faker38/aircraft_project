@@ -80,6 +80,58 @@ class AppStyles:
             border: none;
             background: transparent;
         }}
+        QScrollBar:vertical {{
+            background: rgba(255, 255, 255, 0.02);
+            width: 10px;
+            margin: 4px 3px 4px 3px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: rgba(148, 165, 181, 0.30);
+            min-height: 36px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: rgba(148, 165, 181, 0.44);
+        }}
+        QScrollBar::handle:vertical:pressed {{
+            background: rgba(94, 166, 211, 0.56);
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
+            background: transparent;
+            border: none;
+        }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+            background: transparent;
+            border: none;
+        }}
+        QScrollBar:horizontal {{
+            background: rgba(255, 255, 255, 0.02);
+            height: 10px;
+            margin: 3px 4px 3px 4px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background: rgba(148, 165, 181, 0.30);
+            min-width: 36px;
+            border-radius: 5px;
+        }}
+        QScrollBar::handle:horizontal:hover {{
+            background: rgba(148, 165, 181, 0.44);
+        }}
+        QScrollBar::handle:horizontal:pressed {{
+            background: rgba(94, 166, 211, 0.56);
+        }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0px;
+            background: transparent;
+            border: none;
+        }}
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+            background: transparent;
+            border: none;
+        }}
         QStatusBar {{
             background-color: {t.bg};
             color: {t.text_muted};
