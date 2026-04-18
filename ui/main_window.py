@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
 
 from config import APP_NAME, APP_SUBTITLE
 from ui.page_capture import CapturePage
-from ui.page_export import ExportPage
+from ui.page_dataset import DatasetPage
 from ui.page_overview import OverviewPage
-from ui.page_process import ProcessPage
+from ui.page_preprocess import PreprocessPage
+from ui.page_recognition import RecognitionPage
 from ui.page_train import TrainPage
 from ui.widgets import StatusBadge
 
@@ -32,9 +33,10 @@ class MainWindow(QMainWindow):
     PAGE_META: dict[str, tuple[str, str]] = {
         "overview": ("工程总览", "查看当前流程阶段、系统状态和任务入口。"),
         "capture": ("步骤 1 · 数据采集", "完成设备接入、参数配置和原始文件记录。"),
-        "process": ("步骤 2 · 信号处理与标注", "完成样本处理、标注维护和数据集构建。"),
-        "train": ("步骤 3 · 模型训练", "配置训练任务并查看评估结果。"),
-        "export": ("步骤 4 · 模型导出", "生成部署模型与配套交付文件。"),
+        "preprocess": ("步骤 2 · 信号预处理", "完成信号筛选、切片和样本生成。"),
+        "dataset": ("步骤 3 · 数据集管理", "完成标注维护与数据集构建。"),
+        "train": ("步骤 4 · 模型训练", "执行训练评估并导出模型。"),
+        "recognition": ("步骤 5 · 无人机识别", "执行类型识别与个体指纹识别。"),
     }
 
     def __init__(self) -> None:
@@ -98,9 +100,10 @@ class MainWindow(QMainWindow):
         nav_items = [
             ("overview", "工程总览"),
             ("capture", "数据采集"),
-            ("process", "信号处理与标注"),
+            ("preprocess", "信号预处理"),
+            ("dataset", "数据集管理"),
             ("train", "模型训练"),
-            ("export", "模型导出"),
+            ("recognition", "无人机识别"),
         ]
         for key, label in nav_items:
             button = QPushButton(label)
@@ -167,16 +170,18 @@ class MainWindow(QMainWindow):
         capture_page = CapturePage()
         capture_page.connection_state_changed.connect(self._update_connection_badge)
 
-        process_page = ProcessPage()
+        preprocess_page = PreprocessPage()
+        dataset_page = DatasetPage()
         train_page = TrainPage()
-        export_page = ExportPage()
+        recognition_page = RecognitionPage()
 
         self.pages = {
             "overview": overview_page,
             "capture": capture_page,
-            "process": process_page,
+            "preprocess": preprocess_page,
+            "dataset": dataset_page,
             "train": train_page,
-            "export": export_page,
+            "recognition": recognition_page,
         }
         for page in self.pages.values():
             self.page_stack.addWidget(page)

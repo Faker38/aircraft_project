@@ -1,13 +1,15 @@
-"""Training page for machine learning and deep learning workflows."""
+"""Training page for machine learning, deep learning, and export workflows."""
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -18,11 +20,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config import EXPORTS_DIR
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class TrainPage(QWidget):
-    """Workflow page used to configure and present training results."""
+    """Workflow page used to configure training, evaluate results, and export models."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the training page."""
@@ -42,7 +45,7 @@ class TrainPage(QWidget):
         metrics_row.setSpacing(12)
         metrics_row.addWidget(MetricCard("最新精度", "94.7%", compact=True))
         metrics_row.addWidget(MetricCard("F1 分数", "0.942", accent_color="#7CB98B", compact=True))
-        metrics_row.addWidget(MetricCard("任务模型", "IQCNN_v3", accent_color="#C59A63", compact=True))
+        metrics_row.addWidget(MetricCard("导出格式", "ONNX", accent_color="#C59A63", compact=True))
         content_layout.addLayout(metrics_row)
 
         content_layout.addWidget(self._build_config_card())
@@ -50,7 +53,7 @@ class TrainPage(QWidget):
         lower_row = QHBoxLayout()
         lower_row.setSpacing(14)
         lower_row.addWidget(self._build_results_card(), 3)
-        lower_row.addWidget(self._build_inference_card(), 2)
+        lower_row.addWidget(self._build_export_workspace(), 2)
         content_layout.addLayout(lower_row)
         content_layout.addStretch(1)
 
@@ -218,61 +221,149 @@ class TrainPage(QWidget):
         section.body_layout.addWidget(detail_table)
         return section
 
-    def _build_inference_card(self) -> SectionCard:
-        """Create the single-sample inference demo card."""
+    def _build_export_workspace(self) -> QWidget:
+        """Create the export workspace shown beside training results."""
+
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        layout.addWidget(self._build_export_config_card())
+        layout.addWidget(self._build_export_result_card())
+        layout.addStretch(1)
+        return wrapper
+
+    def _build_export_config_card(self) -> SectionCard:
+        """Create the integrated export configuration card."""
 
         section = SectionCard(
-            "单样本校验",
-            "加载样本并查看当前模型输出。",
-            right_widget=StatusBadge("结果: DJI_Mavic3", "success", size="sm"),
+            "模型导出",
+            "选择模型并生成交付文件。",
+            right_widget=StatusBadge("待导出", "info", size="sm"),
             compact=True,
         )
 
-        form_layout = QFormLayout()
-        form_layout.setHorizontalSpacing(12)
-        form_layout.setVerticalSpacing(12)
+        self.export_model_box = QComboBox()
+        self.export_model_box.addItems(
+            [
+                "rf_type_v001 | 类型识别 | RandomForest",
+                "iqcnn_v003 | 个体识别 | 1D-CNN",
+                "cnn_lstm_v001 | 个体识别 | CNN + LSTM",
+            ]
+        )
+        self.export_model_box.currentIndexChanged.connect(self._update_export_details)
 
-        model_selector = QComboBox()
-        model_selector.addItems(["rf_type_v001", "iqcnn_v003", "cnn_lstm_v001"])
+        self.export_detail_labels = {
+            "任务类型": QLabel(),
+            "算法": QLabel(),
+            "数据集版本": QLabel(),
+            "最新精度": QLabel(),
+        }
+        for label in self.export_detail_labels.values():
+            label.setObjectName("ValueLabel")
 
-        source_selector = QComboBox()
-        source_selector.addItems(["数据库中已有样本", "外部 .cap 文件"])
+        info_layout = QFormLayout()
+        info_layout.setHorizontalSpacing(12)
+        info_layout.setVerticalSpacing(12)
+        info_layout.addRow("模型列表", self.export_model_box)
+        for key, value in self.export_detail_labels.items():
+            info_layout.addRow(key, value)
 
-        sample_selector = QComboBox()
-        sample_selector.addItems(["sample_1101.npy", "sample_1103.npy", "demo_capture.cap"])
+        export_layout = QFormLayout()
+        export_layout.setHorizontalSpacing(12)
+        export_layout.setVerticalSpacing(12)
 
-        form_layout.addRow("选择模型", model_selector)
-        form_layout.addRow("样本来源", source_selector)
-        form_layout.addRow("目标样本", sample_selector)
+        self.export_path_input = QLineEdit(str(EXPORTS_DIR))
+        self.format_box = QComboBox()
+        self.format_box.addItems(["ONNX（必选）", "ONNX + 原始模型", "仅原始模型"])
 
-        probability_table = QTableWidget(4, 2)
-        probability_table.setHorizontalHeaderLabels(["类别", "置信度"])
-        probability_table.horizontalHeader().setStretchLastSection(True)
-        probability_table.verticalHeader().setVisible(False)
-        probability_table.setAlternatingRowColors(True)
-        configure_scrollable(probability_table)
+        export_layout.addRow("导出路径", self.export_path_input)
+        export_layout.addRow("导出格式", self.format_box)
+
+        self.include_readme = QCheckBox("附带 README.md")
+        self.include_readme.setChecked(True)
+        self.include_example = QCheckBox("附带 inference_example.py")
+        self.include_example.setChecked(True)
+        self.include_preprocess = QCheckBox("附带 preprocess_config.json")
+        self.include_preprocess.setChecked(True)
+        self.include_mapping = QCheckBox("附带 class_mapping.json")
+        self.include_mapping.setChecked(True)
+
+        option_column = QVBoxLayout()
+        option_column.setSpacing(8)
+        for checkbox in [
+            self.include_readme,
+            self.include_example,
+            self.include_preprocess,
+            self.include_mapping,
+        ]:
+            option_column.addWidget(checkbox)
+
+        action_row = QHBoxLayout()
+        export_button = QPushButton("执行导出")
+        export_button.setObjectName("PrimaryButton")
+        verify_button = QPushButton("执行精度校核")
+        action_row.addWidget(export_button)
+        action_row.addWidget(verify_button)
+        action_row.addStretch(1)
+
+        section.body_layout.addLayout(info_layout)
+        section.body_layout.addLayout(export_layout)
+        section.body_layout.addLayout(option_column)
+        section.body_layout.addLayout(action_row)
+
+        self._update_export_details(0)
+        return section
+
+    def _build_export_result_card(self) -> SectionCard:
+        """Create the export result card."""
+
+        section = SectionCard("交付结果", "显示导出文件与校核状态。", compact=True)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        status_row.addWidget(StatusBadge("校核通过", "success", size="sm"))
+
+        drift_label = QLabel("原模型 94.7% | ONNX Runtime 94.5% | 偏差 0.2%")
+        drift_label.setObjectName("MutedText")
+        status_row.addWidget(drift_label)
+        status_row.addStretch(1)
+
+        result_table = QTableWidget(5, 3)
+        result_table.setHorizontalHeaderLabels(["文件名", "类型", "备注"])
+        result_table.horizontalHeader().setStretchLastSection(True)
+        result_table.verticalHeader().setVisible(False)
+        result_table.setAlternatingRowColors(True)
+        configure_scrollable(result_table)
         rows = [
-            ["DJI_Mavic3", "73.5%"],
-            ["Autel_EVO", "12.4%"],
-            ["FPV_Racing", "8.7%"],
-            ["Unknown", "5.4%"],
+            ["model.onnx", "模型", "ONNX 推理模型"],
+            ["class_mapping.json", "配置", "类别 ID 到标签映射"],
+            ["preprocess_config.json", "配置", "预处理参数"],
+            ["inference_example.py", "推理脚本", "完整推理样例"],
+            ["README.md", "交付文档", "部署与调用说明"],
         ]
         for row_index, row_data in enumerate(rows):
             for column, value in enumerate(row_data):
-                probability_table.setItem(row_index, column, QTableWidgetItem(value))
+                result_table.setItem(row_index, column, QTableWidgetItem(value))
 
-        button_row = QHBoxLayout()
-        load_button = QPushButton("加载样本")
-        run_button = QPushButton("开始识别")
-        run_button.setObjectName("PrimaryButton")
-        button_row.addWidget(load_button)
-        button_row.addWidget(run_button)
-        button_row.addStretch(1)
-
-        section.body_layout.addLayout(form_layout)
-        section.body_layout.addLayout(button_row)
-        section.body_layout.addWidget(probability_table)
+        section.body_layout.addLayout(status_row)
+        section.body_layout.addWidget(result_table)
         return section
+
+    def _update_export_details(self, index: int) -> None:
+        """Refresh export model detail labels."""
+
+        detail_rows = [
+            ("类型识别", "RandomForest", "v003", "94.7%"),
+            ("个体识别", "1D-CNN", "v002", "92.4%"),
+            ("个体识别", "CNN + LSTM", "v002", "93.1%"),
+        ]
+        task_type, algorithm, dataset_version, accuracy = detail_rows[index]
+        self.export_detail_labels["任务类型"].setText(task_type)
+        self.export_detail_labels["算法"].setText(algorithm)
+        self.export_detail_labels["数据集版本"].setText(dataset_version)
+        self.export_detail_labels["最新精度"].setText(accuracy)
 
     def _switch_config_mode(self, index: int) -> None:
         """Switch between the machine learning and deep learning config forms."""

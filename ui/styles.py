@@ -386,5 +386,52 @@ class AppStyles:
         }}
         QCheckBox, QRadioButton {{
             spacing: 8px;
+            color: {t.text};
+        }}
+        QCheckBox::indicator {{
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border: 1px solid rgba(148, 165, 181, 0.42);
+            background: rgba(255, 255, 255, 0.04);
+        }}
+        QCheckBox::indicator:hover {{
+            border: 1px solid rgba(94, 166, 211, 0.50);
+            background: rgba(94, 166, 211, 0.08);
+        }}
+        QCheckBox::indicator:checked {{
+            border: 1px solid rgba(94, 166, 211, 0.72);
+            background: rgba(94, 166, 211, 0.24);
+        }}
+        QRadioButton::indicator {{
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(148, 165, 181, 0.42);
+            background: rgba(255, 255, 255, 0.04);
+        }}
+        QRadioButton::indicator:hover {{
+            border: 1px solid rgba(94, 166, 211, 0.50);
+            background: rgba(94, 166, 211, 0.08);
+        }}
+        QRadioButton::indicator:checked {{
+            border: 1px solid rgba(94, 166, 211, 0.78);
+            background: qradialgradient(
+                cx: 0.5, cy: 0.5, radius: 0.56, fx: 0.5, fy: 0.5,
+                stop: 0 rgba(94, 166, 211, 0.96),
+                stop: 0.32 rgba(94, 166, 211, 0.96),
+                stop: 0.34 rgba(94, 166, 211, 0.18),
+                stop: 1 rgba(94, 166, 211, 0.18)
+            );
+        }}
+        QRadioButton::indicator:unchecked {{
+            margin-top: 1px;
+        }}
+        QRadioButton::indicator:checked {{
+            margin-top: 1px;
+        }}
+        QRadioButton::indicator:checked:disabled, QCheckBox::indicator:checked:disabled {{
+            border: 1px solid rgba(148, 165, 181, 0.28);
+            background: rgba(148, 165, 181, 0.14);
         }}
         """

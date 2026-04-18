@@ -17,7 +17,7 @@ from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge
 
 
 class OverviewPage(QWidget):
-    """Landing page that summarizes the four-step workflow."""
+    """Landing page that summarizes the five-step workflow."""
 
     navigate_requested = Signal(str)
 
@@ -52,7 +52,7 @@ class OverviewPage(QWidget):
 
         section = SectionCard(
             "任务总览",
-            "当前任务按采集、处理、训练、导出四个步骤组织。",
+            "当前任务按采集、预处理、数据集管理、训练、识别五个步骤组织。",
             right_widget=StatusBadge("步骤 1 就绪", "info", size="sm"),
             compact=True,
         )
@@ -116,9 +116,10 @@ class OverviewPage(QWidget):
 
         steps = [
             ("capture", "01", "数据采集", "待执行", "设备接入与记录控制"),
-            ("process", "02", "信号处理", "待处理", "样本切片、标注和数据集构建"),
-            ("train", "03", "模型训练", "可训练", "训练配置与结果评估"),
-            ("export", "04", "模型导出", "待导出", "模型导出与交付文件生成"),
+            ("preprocess", "02", "信号预处理", "待处理", "原始文件筛选与样本生成"),
+            ("dataset", "03", "数据集管理", "待整理", "标注维护与数据集构建"),
+            ("train", "04", "模型训练", "可训练", "训练评估与模型导出"),
+            ("recognition", "05", "无人机识别", "待识别", "类型识别与个体指纹识别"),
         ]
 
         for index, (page_key, step_no, title, state, hint) in enumerate(steps):
@@ -184,7 +185,7 @@ class OverviewPage(QWidget):
         row.setSpacing(12)
         row.addWidget(MetricCard("数据集版本", "v003", compact=True))
         row.addWidget(MetricCard("最新模型精度", "94.7%", accent_color="#7CB98B", compact=True))
-        row.addWidget(MetricCard("交付格式", "ONNX", accent_color="#C59A63", compact=True))
+        row.addWidget(MetricCard("当前识别模型", "iqcnn_v003", accent_color="#C59A63", compact=True))
 
         section.body_layout.addLayout(row)
         return section
