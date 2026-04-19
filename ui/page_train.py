@@ -1,4 +1,4 @@
-"""Training page for machine learning, deep learning, and export workflows."""
+"""Training page for placeholder model training and export workflows."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import EXPORTS_DIR
+from services import DatasetVersionRecord
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -31,6 +32,9 @@ class TrainPage(QWidget):
         """Initialize the training page."""
 
         super().__init__(parent)
+        self.dataset_versions: list[DatasetVersionRecord] = []
+        self.export_models: list[dict[str, str]] = []
+
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -43,9 +47,12 @@ class TrainPage(QWidget):
 
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
-        metrics_row.addWidget(MetricCard("最新精度", "94.7%", compact=True))
-        metrics_row.addWidget(MetricCard("F1 分数", "0.942", accent_color="#7CB98B", compact=True))
-        metrics_row.addWidget(MetricCard("导出格式", "ONNX", accent_color="#C59A63", compact=True))
+        self.accuracy_metric = MetricCard("最新精度", "94.7%", compact=True)
+        self.f1_metric = MetricCard("F1 分数", "0.942", accent_color="#7CB98B", compact=True)
+        self.export_metric = MetricCard("导出格式", "ONNX", accent_color="#C59A63", compact=True)
+        metrics_row.addWidget(self.accuracy_metric)
+        metrics_row.addWidget(self.f1_metric)
+        metrics_row.addWidget(self.export_metric)
         content_layout.addLayout(metrics_row)
 
         content_layout.addWidget(self._build_config_card())
@@ -60,13 +67,37 @@ class TrainPage(QWidget):
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
+    def set_dataset_versions(self, records: list[DatasetVersionRecord]) -> None:
+        """Refresh the dataset selector from the dataset-management page."""
+
+        self.dataset_versions = list(records)
+        current_version = self.dataset_box.currentData().version_id if isinstance(self.dataset_box.currentData(), DatasetVersionRecord) else None
+
+        self.dataset_box.blockSignals(True)
+        self.dataset_box.clear()
+        for record in self.dataset_versions:
+            display_text = f"{record.version_id} | {record.task_type} | {record.source_summary}"
+            self.dataset_box.addItem(display_text, record)
+        self.dataset_box.blockSignals(False)
+
+        if self.dataset_versions:
+            target_index = 0
+            if current_version is not None:
+                for index in range(self.dataset_box.count()):
+                    record = self.dataset_box.itemData(index)
+                    if isinstance(record, DatasetVersionRecord) and record.version_id == current_version:
+                        target_index = index
+                        break
+            self.dataset_box.setCurrentIndex(target_index)
+
     def _build_config_card(self) -> SectionCard:
         """Create the training configuration card."""
 
+        self.training_status_badge = StatusBadge("待启动", "info", size="sm")
         section = SectionCard(
             "训练配置",
-            "选择任务类型、数据集版本和训练参数。",
-            right_widget=StatusBadge("待启动", "info", size="sm"),
+            "选择任务类型、数据集版本和训练参数。当前先验证训练入口与结果联动。",
+            right_widget=self.training_status_badge,
             compact=True,
         )
 
@@ -77,13 +108,12 @@ class TrainPage(QWidget):
         self.task_type_box.currentIndexChanged.connect(self._switch_config_mode)
 
         self.dataset_box = QComboBox()
-        self.dataset_box.addItems(["v001", "v002", "v003"])
 
         switch_row.addWidget(QLabel("任务类型"))
         switch_row.addWidget(self.task_type_box)
         switch_row.addSpacing(10)
         switch_row.addWidget(QLabel("数据集版本"))
-        switch_row.addWidget(self.dataset_box)
+        switch_row.addWidget(self.dataset_box, 1)
         switch_row.addStretch(1)
 
         self.config_stack = QStackedWidget()
@@ -93,9 +123,13 @@ class TrainPage(QWidget):
         action_row = QHBoxLayout()
         start_button = QPushButton("执行训练")
         start_button.setObjectName("PrimaryButton")
+        start_button.clicked.connect(self._run_placeholder_training)
+
         stop_button = QPushButton("中止训练")
         stop_button.setObjectName("DangerButton")
+
         validate_button = QPushButton("数据检查")
+        validate_button.clicked.connect(self._run_dataset_check)
 
         action_row.addWidget(start_button)
         action_row.addWidget(stop_button)
@@ -173,52 +207,41 @@ class TrainPage(QWidget):
     def _build_results_card(self) -> SectionCard:
         """Create the unified results display card."""
 
-        section = SectionCard("结果评估", "显示训练结果和分类明细。", compact=True)
+        section = SectionCard("结果评估", "显示当前训练占位结果和分类明细。", compact=True)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
 
-        confusion_placeholder = QPlainTextEdit()
-        confusion_placeholder.setReadOnly(True)
-        confusion_placeholder.setPlainText(
+        self.confusion_placeholder = QPlainTextEdit()
+        self.confusion_placeholder.setReadOnly(True)
+        self.confusion_placeholder.setPlainText(
             "混淆矩阵显示区\n\n"
-            "后续接入 Matplotlib 或 seaborn 画布。"
+            "执行训练后，这里会按当前数据集版本刷新摘要。"
         )
-        confusion_placeholder.setMinimumHeight(240)
-        configure_scrollable(confusion_placeholder)
+        self.confusion_placeholder.setMinimumHeight(240)
+        configure_scrollable(self.confusion_placeholder)
 
-        training_log = QPlainTextEdit()
-        training_log.setReadOnly(True)
-        training_log.setPlainText(
-            "[Epoch 01] train_acc=0.74, val_acc=0.71\n"
-            "[Epoch 10] train_acc=0.88, val_acc=0.84\n"
-            "[Epoch 21] train_acc=0.95, val_acc=0.93\n"
-            "最优权重已归档至 data/models/"
+        self.training_log = QPlainTextEdit()
+        self.training_log.setReadOnly(True)
+        self.training_log.setPlainText(
+            "等待训练任务启动。\n"
+            "当前页面会消费数据集管理页生成的数据集版本。"
         )
-        training_log.setMinimumHeight(240)
-        configure_scrollable(training_log)
+        self.training_log.setMinimumHeight(240)
+        configure_scrollable(self.training_log)
 
-        summary_row.addWidget(confusion_placeholder, 2)
-        summary_row.addWidget(training_log, 1)
+        summary_row.addWidget(self.confusion_placeholder, 2)
+        summary_row.addWidget(self.training_log, 1)
 
-        detail_table = QTableWidget(4, 5)
-        detail_table.setHorizontalHeaderLabels(["类别", "精确率", "召回率", "F1", "样本数"])
-        detail_table.horizontalHeader().setStretchLastSection(True)
-        detail_table.verticalHeader().setVisible(False)
-        detail_table.setAlternatingRowColors(True)
-        configure_scrollable(detail_table)
-        rows = [
-            ["DJI_Mavic3", "0.96", "0.94", "0.95", "205"],
-            ["Autel_EVO", "0.92", "0.90", "0.91", "138"],
-            ["FPV_Racing", "0.95", "0.97", "0.96", "264"],
-            ["Unknown", "0.88", "0.84", "0.86", "29"],
-        ]
-        for row_index, row_data in enumerate(rows):
-            for column, value in enumerate(row_data):
-                detail_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.detail_table = QTableWidget(0, 5)
+        self.detail_table.setHorizontalHeaderLabels(["类别 / 个体", "精确率", "召回率", "F1", "样本数"])
+        self.detail_table.horizontalHeader().setStretchLastSection(True)
+        self.detail_table.verticalHeader().setVisible(False)
+        self.detail_table.setAlternatingRowColors(True)
+        configure_scrollable(self.detail_table)
 
         section.body_layout.addLayout(summary_row)
-        section.body_layout.addWidget(detail_table)
+        section.body_layout.addWidget(self.detail_table)
         return section
 
     def _build_export_workspace(self) -> QWidget:
@@ -245,13 +268,6 @@ class TrainPage(QWidget):
         )
 
         self.export_model_box = QComboBox()
-        self.export_model_box.addItems(
-            [
-                "rf_type_v001 | 类型识别 | RandomForest",
-                "iqcnn_v003 | 个体识别 | 1D-CNN",
-                "cnn_lstm_v001 | 个体识别 | CNN + LSTM",
-            ]
-        )
         self.export_model_box.currentIndexChanged.connect(self._update_export_details)
 
         self.export_detail_labels = {
@@ -313,7 +329,31 @@ class TrainPage(QWidget):
         section.body_layout.addLayout(option_column)
         section.body_layout.addLayout(action_row)
 
-        self._update_export_details(0)
+        self._set_export_models(
+            [
+                {
+                    "name": "rf_type_v001",
+                    "task_type": "类型识别",
+                    "algorithm": "RandomForest",
+                    "dataset_version": "v003",
+                    "accuracy": "94.7%",
+                },
+                {
+                    "name": "iqcnn_v003",
+                    "task_type": "个体识别",
+                    "algorithm": "1D-CNN",
+                    "dataset_version": "v002",
+                    "accuracy": "92.4%",
+                },
+                {
+                    "name": "cnn_lstm_v001",
+                    "task_type": "个体识别",
+                    "algorithm": "CNN + LSTM",
+                    "dataset_version": "v002",
+                    "accuracy": "93.1%",
+                },
+            ]
+        )
         return section
 
     def _build_export_result_card(self) -> SectionCard:
@@ -351,19 +391,182 @@ class TrainPage(QWidget):
         section.body_layout.addWidget(result_table)
         return section
 
+    def _set_export_models(self, models: list[dict[str, str]]) -> None:
+        """Replace the export model list and refresh the detail panel."""
+
+        self.export_models = models
+        current_name = self.export_model_box.currentData()["name"] if isinstance(self.export_model_box.currentData(), dict) else None
+        self.export_model_box.blockSignals(True)
+        self.export_model_box.clear()
+        for model in models:
+            display_text = f"{model['name']} | {model['task_type']} | {model['algorithm']}"
+            self.export_model_box.addItem(display_text, model)
+        self.export_model_box.blockSignals(False)
+
+        if models:
+            target_index = 0
+            if current_name is not None:
+                for index in range(self.export_model_box.count()):
+                    model = self.export_model_box.itemData(index)
+                    if isinstance(model, dict) and model["name"] == current_name:
+                        target_index = index
+                        break
+            self.export_model_box.setCurrentIndex(target_index)
+            self._update_export_details(target_index)
+
+    def _run_dataset_check(self) -> None:
+        """Run one lightweight dataset sanity check."""
+
+        record = self.dataset_box.currentData()
+        if not isinstance(record, DatasetVersionRecord):
+            self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
+            return
+
+        lines = [
+            f"[Check] 数据集版本：{record.version_id}",
+            f"[Check] 任务类型：{record.task_type}",
+            f"[Check] 样本数：{record.sample_count}",
+            f"[Check] 来源：{record.source_summary}",
+            f"[Check] 类别 / 个体数量：{len(record.label_counts)}",
+        ]
+        if len(record.label_counts) == 1:
+            lines.append("[Warn] 当前为单类数据集，仅用于链路验证，不适合作为最终模型评估依据。")
+        else:
+            lines.append("[OK] 当前数据集具备多类标签，可继续执行占位训练流程。")
+        self.training_log.setPlainText("\n".join(lines))
+
+    def _run_placeholder_training(self) -> None:
+        """Run one placeholder training flow from the current dataset version."""
+
+        record = self.dataset_box.currentData()
+        if not isinstance(record, DatasetVersionRecord):
+            self.training_status_badge.set_status("无数据集", "danger", size="sm")
+            self.training_log.setPlainText("未选择有效数据集版本，请先在数据集管理页生成版本。")
+            return
+
+        label_count = len(record.label_counts)
+        is_single_class = label_count == 1
+        task_type = record.task_type
+
+        if is_single_class:
+            accuracy_text = "100.0%"
+            f1_text = "1.000"
+            self.training_status_badge.set_status("单类验证", "warning", size="sm")
+        else:
+            accuracy_text = "93.8%" if task_type == "类型识别" else "92.6%"
+            f1_text = "0.938" if task_type == "类型识别" else "0.926"
+            self.training_status_badge.set_status("训练完成", "success", size="sm")
+
+        self.accuracy_metric.set_value(accuracy_text)
+        self.f1_metric.set_value(f1_text)
+        self.export_metric.set_value("ONNX")
+
+        self.confusion_placeholder.setPlainText(
+            f"当前版本：{record.version_id}\n"
+            f"任务类型：{task_type}\n"
+            f"来源：{record.source_summary}\n"
+            f"标签数量：{label_count}\n\n"
+            "当前为占位训练结果展示区，后续可接真实训练和可视化混淆矩阵。"
+        )
+
+        log_lines = [
+            f"[Start] 数据集版本 {record.version_id}",
+            f"[Info] 任务类型 {task_type}",
+            f"[Info] 样本总数 {record.sample_count}",
+            f"[Info] 来源 {record.source_summary}",
+        ]
+        if is_single_class:
+            log_lines.extend(
+                [
+                    "[Warn] 当前数据集仅含单类标签，本次训练结果仅用于验证导入 -> 数据集 -> 训练链路。",
+                    "[Done] 已生成演示级模型输出，不代表最终识别能力。",
+                ]
+            )
+        else:
+            log_lines.extend(
+                [
+                    "[Epoch 01] train_acc=0.78, val_acc=0.74",
+                    "[Epoch 12] train_acc=0.91, val_acc=0.88",
+                    f"[Done] 最终精度 {accuracy_text}，F1 {f1_text}",
+                ]
+            )
+        self.training_log.setPlainText("\n".join(log_lines))
+
+        self._refresh_detail_table(record, is_single_class)
+        self._append_export_model(record, accuracy_text)
+
+    def _refresh_detail_table(self, record: DatasetVersionRecord, is_single_class: bool) -> None:
+        """Render class-level placeholder metrics for the current dataset version."""
+
+        rows = sorted(record.label_counts.items(), key=lambda item: item[0])
+        self.detail_table.setRowCount(len(rows))
+
+        for row_index, (label, count) in enumerate(rows):
+            if is_single_class:
+                values = [label, "1.00", "1.00", "1.00", str(count)]
+            else:
+                precision = "0.94" if row_index % 2 == 0 else "0.92"
+                recall = "0.95" if row_index % 2 == 0 else "0.91"
+                f1 = "0.95" if row_index % 2 == 0 else "0.92"
+                values = [label, precision, recall, f1, str(count)]
+            for column, value in enumerate(values):
+                item = self.detail_table.item(row_index, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.detail_table.setItem(row_index, column, item)
+                item.setText(value)
+
+    def _append_export_model(self, record: DatasetVersionRecord, accuracy_text: str) -> None:
+        """Append or refresh one exportable placeholder model entry."""
+
+        task_type = record.task_type
+        if task_type == "类型识别":
+            model_name = f"rf_type_{record.version_id}"
+            algorithm = "RandomForest"
+        else:
+            model_name = f"iqcnn_{record.version_id}"
+            algorithm = "1D-CNN"
+
+        updated = False
+        for model in self.export_models:
+            if model["name"] != model_name:
+                continue
+            model["dataset_version"] = record.version_id
+            model["accuracy"] = accuracy_text
+            updated = True
+            break
+
+        if not updated:
+            self.export_models.append(
+                {
+                    "name": model_name,
+                    "task_type": task_type,
+                    "algorithm": algorithm,
+                    "dataset_version": record.version_id,
+                    "accuracy": accuracy_text,
+                }
+            )
+
+        self._set_export_models(self.export_models)
+        for index in range(self.export_model_box.count()):
+            model = self.export_model_box.itemData(index)
+            if isinstance(model, dict) and model["name"] == model_name:
+                self.export_model_box.setCurrentIndex(index)
+                break
+
     def _update_export_details(self, index: int) -> None:
         """Refresh export model detail labels."""
 
-        detail_rows = [
-            ("类型识别", "RandomForest", "v003", "94.7%"),
-            ("个体识别", "1D-CNN", "v002", "92.4%"),
-            ("个体识别", "CNN + LSTM", "v002", "93.1%"),
-        ]
-        task_type, algorithm, dataset_version, accuracy = detail_rows[index]
-        self.export_detail_labels["任务类型"].setText(task_type)
-        self.export_detail_labels["算法"].setText(algorithm)
-        self.export_detail_labels["数据集版本"].setText(dataset_version)
-        self.export_detail_labels["最新精度"].setText(accuracy)
+        model = self.export_model_box.itemData(index)
+        if not isinstance(model, dict):
+            for value in self.export_detail_labels.values():
+                value.setText("-")
+            return
+
+        self.export_detail_labels["任务类型"].setText(model["task_type"])
+        self.export_detail_labels["算法"].setText(model["algorithm"])
+        self.export_detail_labels["数据集版本"].setText(model["dataset_version"])
+        self.export_detail_labels["最新精度"].setText(model["accuracy"])
 
     def _switch_config_mode(self, index: int) -> None:
         """Switch between the machine learning and deep learning config forms."""

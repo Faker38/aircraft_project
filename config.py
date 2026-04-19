@@ -13,6 +13,7 @@ DB_DIR: Path = BASE_DIR / "db"
 DATA_DIR: Path = BASE_DIR / "data"
 RAW_DATA_DIR: Path = DATA_DIR / "raw"
 SAMPLES_DIR: Path = DATA_DIR / "samples"
+RFUAV_SAMPLES_DIR: Path = SAMPLES_DIR / "rfuav"
 FEATURES_DIR: Path = DATA_DIR / "features"
 MODELS_DIR: Path = DATA_DIR / "models"
 EXPORTS_DIR: Path = DATA_DIR / "exports"
@@ -30,6 +31,7 @@ def ensure_project_dirs() -> None:
         DB_DIR,
         RAW_DATA_DIR,
         SAMPLES_DIR,
+        RFUAV_SAMPLES_DIR,
         FEATURES_DIR,
         MODELS_DIR,
         EXPORTS_DIR,
