@@ -5,16 +5,17 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -28,12 +29,15 @@ from PySide6.QtWidgets import (
 from config import BASE_DIR, RFUAV_SAMPLES_DIR
 from services import (
     DatasetVersionRecord,
+    RFUAVDatasetProbe,
+    RFUAVIQFileInfo,
     RFUAVImportError,
     RFUAVImportResult,
     SampleRecord,
-    import_rfuav_dataset,
+    estimate_rfuav_sample_count,
     probe_rfuav_dataset,
 )
+from ui.rfuav_import_worker import RFUAVImportWorker
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -60,6 +64,10 @@ class DatasetPage(QWidget):
         self.sample_records: list[SampleRecord] = self._build_initial_sample_records()
         self.dataset_versions: list[DatasetVersionRecord] = self._build_initial_dataset_versions()
         self._rfuav_import_result: RFUAVImportResult | None = None
+        self._current_public_probe: RFUAVDatasetProbe | None = None
+        self._public_import_thread: QThread | None = None
+        self._public_import_worker: RFUAVImportWorker | None = None
+        self._detected_public_roots: list[Path] = []
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -134,37 +142,61 @@ class DatasetPage(QWidget):
         self.public_import_badge = StatusBadge("待导入", "info", size="sm")
         section = SectionCard(
             "公开数据导入",
-            "将 RFUAV 已筛选好的无人机信号样本直接导入后半流程，不占用信号预处理链路。",
+            "公开数据按单个 IQ 文件切片导入，后台执行，不阻塞当前页面。",
             right_widget=self.public_import_badge,
             compact=True,
         )
 
-        dataset_root = self._guess_public_dataset_root()
+        self._detected_public_roots = self._discover_public_dataset_roots()
+        dataset_root = self._detected_public_roots[0] if self._detected_public_roots else None
+
+        self.public_dataset_selector = QComboBox()
+        self.public_dataset_selector.currentIndexChanged.connect(self._on_detected_public_dataset_changed)
         self.public_dataset_root_input = QLineEdit(str(dataset_root) if dataset_root else "")
         self.public_output_dir_input = QLineEdit(str(RFUAV_SAMPLES_DIR))
         self.public_slice_length = QSpinBox()
         self.public_slice_length.setRange(1024, 262144)
         self.public_slice_length.setSingleStep(1024)
         self.public_slice_length.setValue(65536)
+        self.public_slice_length.valueChanged.connect(self._refresh_public_estimate)
+        self.public_iq_file_box = QComboBox()
+        self.public_iq_file_box.currentIndexChanged.connect(self._refresh_public_estimate)
+
+        self.public_select_source_button = QPushButton("选择目录")
+        self.public_select_source_button.clicked.connect(self._choose_public_dataset_root)
+        self.public_probe_button = QPushButton("读取元数据")
+        self.public_probe_button.clicked.connect(self._refresh_public_dataset_probe)
+        self.public_select_output_button = QPushButton("选择目录")
+        self.public_select_output_button.clicked.connect(self._choose_public_output_dir)
+        self.public_import_button = QPushButton("开始导入")
+        self.public_import_button.setObjectName("PrimaryButton")
+        self.public_import_button.clicked.connect(self._import_public_dataset)
+        self.public_cancel_button = QPushButton("取消")
+        self.public_cancel_button.clicked.connect(self._cancel_public_import)
+        self.public_cancel_button.setEnabled(False)
+
+        dataset_row = QHBoxLayout()
+        dataset_row.setSpacing(10)
+        dataset_row.addWidget(QLabel("已发现目录"))
+        dataset_row.addWidget(self.public_dataset_selector, 1)
 
         source_row = QHBoxLayout()
         source_row.setSpacing(10)
         source_row.addWidget(QLabel("数据根目录"))
         source_row.addWidget(self.public_dataset_root_input, 1)
-        select_source_button = QPushButton("选择目录")
-        select_source_button.clicked.connect(self._choose_public_dataset_root)
-        source_row.addWidget(select_source_button)
-        probe_button = QPushButton("读取元数据")
-        probe_button.clicked.connect(self._refresh_public_dataset_probe)
-        source_row.addWidget(probe_button)
+        source_row.addWidget(self.public_select_source_button)
+        source_row.addWidget(self.public_probe_button)
+
+        file_row = QHBoxLayout()
+        file_row.setSpacing(10)
+        file_row.addWidget(QLabel("IQ 文件"))
+        file_row.addWidget(self.public_iq_file_box, 1)
 
         output_row = QHBoxLayout()
         output_row.setSpacing(10)
         output_row.addWidget(QLabel("样本输出目录"))
         output_row.addWidget(self.public_output_dir_input, 1)
-        select_output_button = QPushButton("选择目录")
-        select_output_button.clicked.connect(self._choose_public_output_dir)
-        output_row.addWidget(select_output_button)
+        output_row.addWidget(self.public_select_output_button)
 
         meta_layout = QFormLayout()
         meta_layout.setHorizontalSpacing(12)
@@ -176,32 +208,45 @@ class DatasetPage(QWidget):
         self.public_individual_value.setObjectName("ValueLabel")
         self.public_file_count_value = QLabel("-")
         self.public_file_count_value.setObjectName("ValueLabel")
+        self.public_selected_file_size_value = QLabel("-")
+        self.public_selected_file_size_value.setObjectName("ValueLabel")
+        self.public_estimate_value = QLabel("-")
+        self.public_estimate_value.setObjectName("ValueLabel")
         self.public_generated_value = QLabel("待导入")
         self.public_generated_value.setObjectName("ValueLabel")
 
         meta_layout.addRow("机型标签", self.public_drone_value)
         meta_layout.addRow("个体标签", self.public_individual_value)
         meta_layout.addRow("原始文件数", self.public_file_count_value)
+        meta_layout.addRow("所选文件大小", self.public_selected_file_size_value)
         meta_layout.addRow("切片长度", self.public_slice_length)
+        meta_layout.addRow("预计样本数", self.public_estimate_value)
         meta_layout.addRow("已导入样本", self.public_generated_value)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        import_button = QPushButton("导入公开数据")
-        import_button.setObjectName("PrimaryButton")
-        import_button.clicked.connect(self._import_public_dataset)
-        action_row.addWidget(import_button)
+        action_row.addWidget(self.public_import_button)
+        action_row.addWidget(self.public_cancel_button)
         action_row.addStretch(1)
 
-        self.public_status_label = QLabel("默认查找工作区中的 FUTABA T10J 数据目录，可手动切换到其他 RFUAV 样本目录。")
+        self.public_progress_bar = QProgressBar()
+        self.public_progress_bar.setRange(0, 100)
+        self.public_progress_bar.setValue(0)
+        self.public_progress_bar.setFormat("%p%")
+
+        self.public_status_label = QLabel("默认优先选择 FUTABA T10J，可切换到同结构的 FLYSKY EL 18 等公开数据目录。")
         self.public_status_label.setObjectName("MutedText")
         self.public_status_label.setWordWrap(True)
 
+        section.body_layout.addLayout(dataset_row)
         section.body_layout.addLayout(source_row)
+        section.body_layout.addLayout(file_row)
         section.body_layout.addLayout(output_row)
         section.body_layout.addLayout(meta_layout)
         section.body_layout.addLayout(action_row)
+        section.body_layout.addWidget(self.public_progress_bar)
         section.body_layout.addWidget(self.public_status_label)
+        self._sync_detected_public_dataset_options(dataset_root)
         return section
 
     def _build_mapping_card(self) -> SectionCard:
@@ -591,11 +636,114 @@ class DatasetPage(QWidget):
             ),
         ]
 
-    def _guess_public_dataset_root(self) -> Path | None:
-        """Return the current FUTABA RFUAV directory if it exists."""
+    def _discover_public_dataset_roots(self) -> list[Path]:
+        """Discover RFUAV-style dataset directories in the workspace."""
 
-        candidate = BASE_DIR.parent / "FUTABA%20T10J" / "FUTABA T10J"
-        return candidate if candidate.exists() else None
+        workspace_root = BASE_DIR.parent
+        discovered: dict[str, Path] = {}
+
+        def _collect_candidate(candidate: Path) -> None:
+            if not candidate.is_dir():
+                return
+            try:
+                has_xml = any(candidate.glob("*.xml"))
+                has_iq = any(candidate.glob("*.iq"))
+            except OSError:
+                return
+            if has_xml and has_iq:
+                discovered[str(candidate.resolve())] = candidate
+
+        try:
+            for child in workspace_root.iterdir():
+                if not child.is_dir():
+                    continue
+                _collect_candidate(child)
+                try:
+                    for nested in child.iterdir():
+                        if nested.is_dir():
+                            _collect_candidate(nested)
+                except OSError:
+                    continue
+        except OSError:
+            return []
+
+        return sorted(
+            discovered.values(),
+            key=lambda path: (0 if "futaba" in path.name.lower() else 1, path.name.lower()),
+        )
+
+    def _format_public_dataset_label(self, dataset_root: Path) -> str:
+        """Return one compact combo-box label for a discovered public dataset root."""
+
+        parent_name = dataset_root.parent.name
+        if parent_name == BASE_DIR.parent.name:
+            return dataset_root.name
+        return f"{dataset_root.name} ({parent_name})"
+
+    def _normalize_public_label(self, value: str) -> str:
+        """Normalize one public metadata label for UI display."""
+
+        cleaned = re.sub(r"[^0-9A-Za-z]+", "_", value.strip())
+        return cleaned.strip("_") or value.strip() or "-"
+
+    def _format_bytes(self, size_bytes: int) -> str:
+        """Return one compact human-readable byte size string."""
+
+        value = float(size_bytes)
+        units = ["B", "KB", "MB", "GB", "TB"]
+        unit_index = 0
+        while value >= 1024.0 and unit_index < len(units) - 1:
+            value /= 1024.0
+            unit_index += 1
+        return f"{value:.1f} {units[unit_index]}"
+
+    def _sync_detected_public_dataset_options(self, preferred_root: Path | None = None) -> None:
+        """Refresh the detected RFUAV dataset list and preserve the current selection."""
+
+        current_text = self.public_dataset_root_input.text().strip()
+        current_root = Path(current_text) if current_text else None
+        if preferred_root is not None:
+            current_root = Path(preferred_root)
+
+        discovered = self._discover_public_dataset_roots()
+        if current_root is not None and current_root.exists():
+            current_resolved = str(current_root.resolve())
+            if all(str(path.resolve()) != current_resolved for path in discovered):
+                discovered.append(current_root)
+
+        discovered = sorted(
+            discovered,
+            key=lambda path: (0 if "futaba" in path.name.lower() else 1, path.name.lower()),
+        )
+        self._detected_public_roots = discovered
+
+        self.public_dataset_selector.blockSignals(True)
+        self.public_dataset_selector.clear()
+        selected_index = -1
+        current_resolved = str(current_root.resolve()) if current_root is not None and current_root.exists() else ""
+        for index, dataset_root in enumerate(discovered):
+            self.public_dataset_selector.addItem(self._format_public_dataset_label(dataset_root), str(dataset_root))
+            if current_resolved and str(dataset_root.resolve()) == current_resolved:
+                selected_index = index
+
+        if selected_index < 0 and discovered:
+            selected_index = 0
+
+        if selected_index >= 0:
+            self.public_dataset_selector.setCurrentIndex(selected_index)
+            self.public_dataset_root_input.setText(str(discovered[selected_index]))
+        else:
+            self.public_dataset_root_input.clear()
+        self.public_dataset_selector.blockSignals(False)
+
+    def _on_detected_public_dataset_changed(self) -> None:
+        """Apply one discovered public dataset root selected from the combo box."""
+
+        dataset_root_text = self.public_dataset_selector.currentData()
+        if not dataset_root_text:
+            return
+        self.public_dataset_root_input.setText(str(dataset_root_text))
+        self._refresh_public_dataset_probe()
 
     def _choose_public_dataset_root(self) -> None:
         """Open one directory chooser for the RFUAV dataset root."""
@@ -603,6 +751,7 @@ class DatasetPage(QWidget):
         selected = QFileDialog.getExistingDirectory(self, "选择 RFUAV 数据根目录", self.public_dataset_root_input.text())
         if selected:
             self.public_dataset_root_input.setText(selected)
+            self._sync_detected_public_dataset_options(Path(selected))
             self._refresh_public_dataset_probe()
 
     def _choose_public_output_dir(self) -> None:
@@ -612,16 +761,92 @@ class DatasetPage(QWidget):
         if selected:
             self.public_output_dir_input.setText(selected)
 
+    def _set_public_import_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable public-import inputs during background work."""
+
+        controls = [
+            self.public_dataset_selector,
+            self.public_dataset_root_input,
+            self.public_select_source_button,
+            self.public_probe_button,
+            self.public_output_dir_input,
+            self.public_select_output_button,
+            self.public_iq_file_box,
+            self.public_slice_length,
+            self.public_import_button,
+        ]
+        for widget in controls:
+            widget.setEnabled(enabled)
+        self.public_cancel_button.setEnabled(not enabled)
+
+    def _reset_public_probe_labels(self) -> None:
+        """Reset the public-import metadata labels to their empty state."""
+
+        self._current_public_probe = None
+        self.public_drone_value.setText("-")
+        self.public_individual_value.setText("-")
+        self.public_file_count_value.setText("-")
+        self.public_selected_file_size_value.setText("-")
+        self.public_estimate_value.setText("-")
+        self.public_generated_value.setText("待导入")
+        self.public_iq_file_box.blockSignals(True)
+        self.public_iq_file_box.clear()
+        self.public_iq_file_box.blockSignals(False)
+        self.public_progress_bar.setRange(0, 100)
+        self.public_progress_bar.setValue(0)
+
+    def _refresh_public_iq_file_options(self) -> None:
+        """Render the IQ file list for the currently probed public dataset."""
+
+        previous_name = ""
+        current_data = self.public_iq_file_box.currentData()
+        if isinstance(current_data, RFUAVIQFileInfo):
+            previous_name = current_data.name
+
+        self.public_iq_file_box.blockSignals(True)
+        self.public_iq_file_box.clear()
+        if self._current_public_probe is not None:
+            selected_index = 0
+            for index, file_info in enumerate(self._current_public_probe.iq_files):
+                label = f"{file_info.name} | {self._format_bytes(file_info.size_bytes)}"
+                self.public_iq_file_box.addItem(label, file_info)
+                if previous_name and file_info.name == previous_name:
+                    selected_index = index
+            self.public_iq_file_box.setCurrentIndex(selected_index)
+        self.public_iq_file_box.blockSignals(False)
+
+    def _refresh_public_estimate(self) -> None:
+        """Refresh the selected IQ file size and estimated sample count."""
+
+        file_info = self.public_iq_file_box.currentData()
+        if not isinstance(file_info, RFUAVIQFileInfo):
+            self.public_selected_file_size_value.setText("-")
+            self.public_estimate_value.setText("-")
+            if self._rfuav_import_result is None:
+                self.public_generated_value.setText("待导入")
+            return
+
+        estimated_count = estimate_rfuav_sample_count(file_info.size_bytes, self.public_slice_length.value())
+        self.public_selected_file_size_value.setText(self._format_bytes(file_info.size_bytes))
+        self.public_estimate_value.setText(str(estimated_count))
+
+        if (
+            self._rfuav_import_result is not None
+            and self._current_public_probe is not None
+            and self._rfuav_import_result.dataset_root == self._current_public_probe.dataset_root
+            and self._rfuav_import_result.selected_file_name == file_info.name
+        ):
+            self.public_generated_value.setText(str(self._rfuav_import_result.generated_sample_count))
+        else:
+            self.public_generated_value.setText("待导入")
+
     def _refresh_public_dataset_probe(self) -> None:
         """Probe the configured RFUAV dataset and refresh the import card."""
 
         dataset_root = Path(self.public_dataset_root_input.text().strip()) if self.public_dataset_root_input.text().strip() else None
         if dataset_root is None:
             self.public_import_badge.set_status("未配置", "warning", size="sm")
-            self.public_drone_value.setText("-")
-            self.public_individual_value.setText("-")
-            self.public_file_count_value.setText("-")
-            self.public_generated_value.setText("待导入")
+            self._reset_public_probe_labels()
             self.public_status_label.setText("请先选择公开数据根目录，再执行元数据读取或样本导入。")
             return
 
@@ -629,31 +854,36 @@ class DatasetPage(QWidget):
             probe = probe_rfuav_dataset(dataset_root)
         except RFUAVImportError as exc:
             self.public_import_badge.set_status("异常", "danger", size="sm")
-            self.public_drone_value.setText("-")
-            self.public_individual_value.setText("-")
-            self.public_file_count_value.setText("-")
-            self.public_generated_value.setText("待导入")
+            self._reset_public_probe_labels()
             self.public_status_label.setText(str(exc))
             return
 
-        type_label = probe.drone_label.replace(" ", "_")
+        self._current_public_probe = probe
+        self._sync_detected_public_dataset_options(probe.dataset_root)
+        self._refresh_public_iq_file_options()
+
+        type_label = self._normalize_public_label(probe.drone_label)
         individual_label = f"{type_label}_{probe.serial_number}"
         self.public_import_badge.set_status("可导入", "success", size="sm")
         self.public_drone_value.setText(type_label)
         self.public_individual_value.setText(individual_label)
         self.public_file_count_value.setText(str(len(probe.iq_files)))
-        if self._rfuav_import_result is None:
-            self.public_generated_value.setText("待导入")
+        self._refresh_public_estimate()
         self.public_status_label.setText(
             f"元数据已读取：{probe.drone_label} | 采样率 {probe.sample_rate_hz / 1_000_000:.1f} MHz | "
-            f"中心频率 {probe.center_frequency_hz / 1_000_000:.1f} MHz"
+            f"中心频率 {probe.center_frequency_hz / 1_000_000:.1f} MHz | 当前按单个 IQ 文件切片导入"
         )
 
     def _import_public_dataset(self) -> None:
-        """Import RFUAV public samples into the shared sample table."""
+        """Start one background RFUAV import task for the selected IQ file."""
+
+        if self._public_import_thread is not None:
+            self.public_status_label.setText("已有公开数据导入任务正在运行，请等待当前任务结束。")
+            return
 
         dataset_root_text = self.public_dataset_root_input.text().strip()
         output_dir_text = self.public_output_dir_input.text().strip()
+        selected_file_info = self.public_iq_file_box.currentData()
         if not dataset_root_text:
             self.public_status_label.setText("请先配置公开数据根目录。")
             self.public_import_badge.set_status("未配置", "warning", size="sm")
@@ -662,28 +892,75 @@ class DatasetPage(QWidget):
             self.public_status_label.setText("请先配置样本输出目录。")
             self.public_import_badge.set_status("未配置", "warning", size="sm")
             return
+        if not isinstance(selected_file_info, RFUAVIQFileInfo):
+            self.public_status_label.setText("请先读取元数据，并选择一个具体的 IQ 文件。")
+            self.public_import_badge.set_status("未配置", "warning", size="sm")
+            return
+
+        total_samples = estimate_rfuav_sample_count(selected_file_info.size_bytes, self.public_slice_length.value())
+        if total_samples <= 0:
+            self.public_status_label.setText("当前切片长度下无法生成有效样本，请调整参数后重试。")
+            self.public_import_badge.set_status("异常", "danger", size="sm")
+            return
 
         self.public_import_badge.set_status("导入中", "warning", size="sm")
-        self.public_status_label.setText("正在执行公开数据样本切片，请稍候...")
-        QApplication.processEvents()
+        self.public_status_label.setText(f"正在后台切片：{selected_file_info.name} | 预计样本 {total_samples} 条")
+        self.public_progress_bar.setRange(0, total_samples)
+        self.public_progress_bar.setValue(0)
+        self._set_public_import_controls_enabled(False)
 
-        try:
-            result = import_rfuav_dataset(
-                Path(dataset_root_text),
-                self.public_slice_length.value(),
-                Path(output_dir_text),
-            )
-        except RFUAVImportError as exc:
-            self.public_import_badge.set_status("失败", "danger", size="sm")
-            self.public_status_label.setText(str(exc))
+        self._public_import_worker = RFUAVImportWorker(
+            dataset_root=Path(dataset_root_text),
+            selected_iq_file=selected_file_info.path,
+            slice_length=self.public_slice_length.value(),
+            output_dir=Path(output_dir_text),
+        )
+        self._public_import_thread = QThread(self)
+        self._public_import_worker.moveToThread(self._public_import_thread)
+
+        self._public_import_thread.started.connect(self._public_import_worker.run)
+        self._public_import_worker.progress_changed.connect(self._on_public_import_progress)
+        self._public_import_worker.finished.connect(self._on_public_import_finished)
+        self._public_import_worker.failed.connect(self._on_public_import_failed)
+        self._public_import_worker.cancelled.connect(self._on_public_import_cancelled)
+        self._public_import_worker.finished.connect(self._public_import_thread.quit)
+        self._public_import_worker.failed.connect(self._public_import_thread.quit)
+        self._public_import_worker.cancelled.connect(self._public_import_thread.quit)
+        self._public_import_thread.finished.connect(self._public_import_worker.deleteLater)
+        self._public_import_thread.finished.connect(self._public_import_thread.deleteLater)
+        self._public_import_thread.finished.connect(self._reset_public_import_task_refs)
+        self._public_import_thread.start()
+
+    def _cancel_public_import(self) -> None:
+        """Request cancellation for the current background import task."""
+
+        if self._public_import_worker is None:
+            return
+        self.public_cancel_button.setEnabled(False)
+        self.public_status_label.setText("正在取消公开数据导入，请稍候...")
+        self._public_import_worker.cancel()
+
+    def _on_public_import_progress(self, current: int, total: int, message: str) -> None:
+        """Update the UI while one public import task is running."""
+
+        self.public_progress_bar.setRange(0, max(total, 1))
+        self.public_progress_bar.setValue(min(current, max(total, 1)))
+        self.public_status_label.setText(message)
+
+    def _on_public_import_finished(self, result: object) -> None:
+        """Merge one completed public import result into the shared sample list."""
+
+        if not isinstance(result, RFUAVImportResult):
+            self._on_public_import_failed("公开数据导入返回结果无效。")
             return
 
         self._rfuav_import_result = result
         self.public_generated_value.setText(str(result.generated_sample_count))
+        self.public_progress_bar.setRange(0, max(result.generated_sample_count, 1))
+        self.public_progress_bar.setValue(result.generated_sample_count)
         self.public_import_badge.set_status("导入完成", "success", size="sm")
         self.public_status_label.setText(
-            f"公开数据导入完成：{result.dataset_name} | 原始文件 {result.imported_raw_file_count} 个 | "
-            f"生成样本 {result.generated_sample_count} 个。"
+            f"导入完成：{result.selected_file_name} | 生成样本 {result.generated_sample_count} 条。"
         )
 
         self.sample_records = [record for record in self.sample_records if record.source_type != "rfuav_public"]
@@ -693,6 +970,31 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._apply_filters()
         self.sample_records_updated.emit(self.get_sample_records())
+        self._set_public_import_controls_enabled(True)
+
+    def _on_public_import_failed(self, error_message: str) -> None:
+        """Restore the UI after one failed public import task."""
+
+        self.public_import_badge.set_status("失败", "danger", size="sm")
+        self.public_progress_bar.setRange(0, 100)
+        self.public_progress_bar.setValue(0)
+        self.public_status_label.setText(error_message)
+        self._set_public_import_controls_enabled(True)
+
+    def _on_public_import_cancelled(self) -> None:
+        """Restore the UI after one cancelled public import task."""
+
+        self.public_import_badge.set_status("已取消", "warning", size="sm")
+        self.public_progress_bar.setRange(0, 100)
+        self.public_progress_bar.setValue(0)
+        self.public_status_label.setText("公开数据导入已取消，当前样本表未写入半成品结果。")
+        self._set_public_import_controls_enabled(True)
+
+    def _reset_public_import_task_refs(self) -> None:
+        """Clear QThread and worker references after one import task ends."""
+
+        self._public_import_worker = None
+        self._public_import_thread = None
 
     def _refresh_sample_table(self) -> None:
         """Render the current unified sample records into the table."""
