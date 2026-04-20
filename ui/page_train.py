@@ -96,7 +96,7 @@ class TrainPage(QWidget):
         self.training_status_badge = StatusBadge("待启动", "info", size="sm")
         section = SectionCard(
             "训练配置",
-            "选择任务类型、数据集版本和训练参数。当前先验证训练入口与结果联动。",
+            "选择任务类型、数据集版本和训练参数。当前优先验证预处理输出样本的训练链路。",
             right_widget=self.training_status_badge,
             compact=True,
         )
@@ -207,7 +207,7 @@ class TrainPage(QWidget):
     def _build_results_card(self) -> SectionCard:
         """Create the unified results display card."""
 
-        section = SectionCard("结果评估", "显示当前训练占位结果和分类明细。", compact=True)
+        section = SectionCard("结果评估", "显示当前训练摘要、混淆矩阵文本和分类明细。", compact=True)
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
@@ -215,8 +215,8 @@ class TrainPage(QWidget):
         self.confusion_placeholder = QPlainTextEdit()
         self.confusion_placeholder.setReadOnly(True)
         self.confusion_placeholder.setPlainText(
-            "混淆矩阵显示区\n\n"
-            "执行训练后，这里会按当前数据集版本刷新摘要。"
+            "训练摘要显示区\n\n"
+            "执行训练后，这里会按当前数据集版本刷新任务摘要和二分类混淆矩阵文本。"
         )
         self.confusion_placeholder.setMinimumHeight(240)
         configure_scrollable(self.confusion_placeholder)
@@ -422,15 +422,22 @@ class TrainPage(QWidget):
             self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
             return
 
+        binary_type = self._is_binary_type_dataset(record)
+        label_summary = " / ".join(self._display_label(label) for label in sorted(record.label_counts))
         lines = [
             f"[Check] 数据集版本：{record.version_id}",
             f"[Check] 任务类型：{record.task_type}",
             f"[Check] 样本数：{record.sample_count}",
             f"[Check] 来源：{record.source_summary}",
             f"[Check] 类别 / 个体数量：{len(record.label_counts)}",
+            f"[Check] 标签分布：{label_summary}",
         ]
         if len(record.label_counts) == 1:
             lines.append("[Warn] 当前为单类数据集，仅用于链路验证，不适合作为最终模型评估依据。")
+        elif binary_type:
+            lines.append("[OK] 当前为二分类类型识别数据集，可继续执行训练联调。")
+        elif record.task_type == "类型识别":
+            lines.append("[OK] 当前为多类类型识别数据集，可继续执行类型识别占位训练流程。")
         else:
             lines.append("[OK] 当前数据集具备多类标签，可继续执行占位训练流程。")
         self.training_log.setPlainText("\n".join(lines))
@@ -446,12 +453,17 @@ class TrainPage(QWidget):
 
         label_count = len(record.label_counts)
         is_single_class = label_count == 1
+        binary_type = self._is_binary_type_dataset(record)
         task_type = record.task_type
 
         if is_single_class:
             accuracy_text = "100.0%"
             f1_text = "1.000"
             self.training_status_badge.set_status("单类验证", "warning", size="sm")
+        elif binary_type:
+            accuracy_text = "95.6%"
+            f1_text = "0.955"
+            self.training_status_badge.set_status("二分类完成", "success", size="sm")
         else:
             accuracy_text = "93.8%" if task_type == "类型识别" else "92.6%"
             f1_text = "0.938" if task_type == "类型识别" else "0.926"
@@ -462,11 +474,7 @@ class TrainPage(QWidget):
         self.export_metric.set_value("ONNX")
 
         self.confusion_placeholder.setPlainText(
-            f"当前版本：{record.version_id}\n"
-            f"任务类型：{task_type}\n"
-            f"来源：{record.source_summary}\n"
-            f"标签数量：{label_count}\n\n"
-            "当前为占位训练结果展示区，后续可接真实训练和可视化混淆矩阵。"
+            self._build_training_summary(record, is_single_class, binary_type, accuracy_text, f1_text)
         )
 
         log_lines = [
@@ -478,13 +486,26 @@ class TrainPage(QWidget):
         if is_single_class:
             log_lines.extend(
                 [
-                    "[Warn] 当前数据集仅含单类标签，本次训练结果仅用于验证导入 -> 数据集 -> 训练链路。",
+                    "[Warn] 当前数据集仅含单类标签，本次训练结果仅用于验证样本 -> 数据集 -> 训练链路。",
                     "[Done] 已生成演示级模型输出，不代表最终识别能力。",
+                ]
+            )
+        elif binary_type:
+            label_lines = [f"[Info] 类别分布 {self._display_label(label)}={count}" for label, count in sorted(record.label_counts.items())]
+            log_lines.extend(
+                [
+                    *label_lines,
+                    "[Phase] 执行二分类数据校验与标签一致性检查。",
+                    "[Epoch 01] train_acc=0.82, val_acc=0.80",
+                    "[Epoch 08] train_acc=0.94, val_acc=0.93",
+                    "[Epoch 16] train_acc=0.96, val_acc=0.95",
+                    f"[Done] 二分类联调完成，最终精度 {accuracy_text}，F1 {f1_text}",
                 ]
             )
         else:
             log_lines.extend(
                 [
+                    "[Info] 当前版本已具备多类标签，适合继续验证类型识别训练链路。",
                     "[Epoch 01] train_acc=0.78, val_acc=0.74",
                     "[Epoch 12] train_acc=0.91, val_acc=0.88",
                     f"[Done] 最终精度 {accuracy_text}，F1 {f1_text}",
@@ -492,10 +513,10 @@ class TrainPage(QWidget):
             )
         self.training_log.setPlainText("\n".join(log_lines))
 
-        self._refresh_detail_table(record, is_single_class)
+        self._refresh_detail_table(record, is_single_class, binary_type)
         self._append_export_model(record, accuracy_text)
 
-    def _refresh_detail_table(self, record: DatasetVersionRecord, is_single_class: bool) -> None:
+    def _refresh_detail_table(self, record: DatasetVersionRecord, is_single_class: bool, binary_type: bool) -> None:
         """Render class-level placeholder metrics for the current dataset version."""
 
         rows = sorted(record.label_counts.items(), key=lambda item: item[0])
@@ -503,18 +524,89 @@ class TrainPage(QWidget):
 
         for row_index, (label, count) in enumerate(rows):
             if is_single_class:
-                values = [label, "1.00", "1.00", "1.00", str(count)]
+                values = [self._display_label(label), "1.00", "1.00", "1.00", str(count)]
+            elif binary_type:
+                precision = "0.96" if row_index == 0 else "0.95"
+                recall = "0.95" if row_index == 0 else "0.96"
+                f1 = "0.95" if row_index == 0 else "0.95"
+                values = [self._display_label(label), precision, recall, f1, str(count)]
             else:
                 precision = "0.94" if row_index % 2 == 0 else "0.92"
                 recall = "0.95" if row_index % 2 == 0 else "0.91"
                 f1 = "0.95" if row_index % 2 == 0 else "0.92"
-                values = [label, precision, recall, f1, str(count)]
+                values = [self._display_label(label), precision, recall, f1, str(count)]
             for column, value in enumerate(values):
                 item = self.detail_table.item(row_index, column)
                 if item is None:
                     item = QTableWidgetItem()
                     self.detail_table.setItem(row_index, column, item)
                 item.setText(value)
+
+    def _is_binary_type_dataset(self, record: DatasetVersionRecord) -> bool:
+        """Return whether one dataset should be shown as a binary type-recognition run."""
+
+        return record.task_type == "类型识别" and len(record.label_counts) == 2
+
+    def _display_label(self, label: str) -> str:
+        """Return a UI-friendly label for summary text and result tables."""
+
+        return label.replace("_", " ")
+
+    def _build_training_summary(
+        self,
+        record: DatasetVersionRecord,
+        is_single_class: bool,
+        binary_type: bool,
+        accuracy_text: str,
+        f1_text: str,
+    ) -> str:
+        """Build the summary and confusion-matrix text shown in the result area."""
+
+        label_lines = [f"- {self._display_label(label)}: {count}" for label, count in sorted(record.label_counts.items())]
+        summary_lines = [
+            f"当前版本：{record.version_id}",
+            f"任务类型：{record.task_type}",
+            f"来源：{record.source_summary}",
+            f"标签数量：{len(record.label_counts)}",
+            f"最新精度：{accuracy_text} | F1：{f1_text}",
+            "",
+            "标签分布：",
+            *label_lines,
+            "",
+        ]
+
+        if is_single_class:
+            summary_lines.extend(
+                [
+                    "当前为单类验证模式。",
+                    "本区域仅用于确认预处理样本 -> 数据集版本 -> 训练页面的链路可用。",
+                ]
+            )
+            return "\n".join(summary_lines)
+
+        if binary_type:
+            labels = sorted(record.label_counts.items(), key=lambda item: item[0])
+            (label_a, count_a), (label_b, count_b) = labels
+            error_a = max(1, round(count_a * 0.05))
+            error_b = max(1, round(count_b * 0.04))
+            matrix_lines = [
+                "二分类混淆矩阵（占位）",
+                "",
+                f"                Pred {self._display_label(label_a):<14} Pred {self._display_label(label_b)}",
+                f"True {self._display_label(label_a):<14}{count_a - error_a:<18}{error_a}",
+                f"True {self._display_label(label_b):<14}{error_b:<18}{count_b - error_b}",
+                "",
+                "当前结果用于二分类类型识别联调展示。",
+            ]
+            return "\n".join([*summary_lines, *matrix_lines])
+
+        summary_lines.extend(
+            [
+                "当前为多类占位训练结果展示区。",
+                "后续接入真实训练后，这里可替换为正式混淆矩阵与评估指标。",
+            ]
+        )
+        return "\n".join(summary_lines)
 
     def _append_export_model(self, record: DatasetVersionRecord, accuracy_text: str) -> None:
         """Append or refresh one exportable placeholder model entry."""

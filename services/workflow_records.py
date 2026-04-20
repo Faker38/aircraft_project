@@ -43,8 +43,7 @@ class SampleRecord:
         """Return one UI-friendly label for the sample source."""
 
         return {
-            "rfuav_public": "公开数据导入",
-            "local_preprocess": "本地预处理输出",
+            "local_preprocess": "预处理输出",
         }.get(self.source_type, "未知来源")
 
 

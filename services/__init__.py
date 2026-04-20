@@ -1,30 +1,26 @@
 """Service-layer helpers for the desktop application."""
 
 from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
-from services.rfuav_importer import (
-    RFUAVDatasetProbe,
-    RFUAVIQFileInfo,
-    RFUAVImportError,
-    RFUAVImportCancelledError,
-    RFUAVImportResult,
-    estimate_rfuav_sample_count,
-    import_rfuav_dataset,
-    probe_rfuav_dataset,
+from services.preprocess_adapter import (
+    PreprocessAdapterError,
+    PreprocessRunConfig,
+    PreprocessRunResult,
+    default_preprocess_output_dir,
+    resolve_default_model_weights_path,
+    run_preprocess,
 )
 from services.workflow_records import DatasetVersionRecord, SampleRecord
 
 __all__ = [
     "CapProbeError",
     "CapProbeResult",
+    "PreprocessAdapterError",
+    "PreprocessRunConfig",
+    "PreprocessRunResult",
+    "default_preprocess_output_dir",
     "probe_cap_file",
+    "resolve_default_model_weights_path",
+    "run_preprocess",
     "DatasetVersionRecord",
     "SampleRecord",
-    "RFUAVDatasetProbe",
-    "RFUAVIQFileInfo",
-    "RFUAVImportError",
-    "RFUAVImportCancelledError",
-    "RFUAVImportResult",
-    "estimate_rfuav_sample_count",
-    "probe_rfuav_dataset",
-    "import_rfuav_dataset",
 ]

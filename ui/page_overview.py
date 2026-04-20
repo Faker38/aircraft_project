@@ -52,7 +52,7 @@ class OverviewPage(QWidget):
 
         section = SectionCard(
             "任务总览",
-            "当前任务按采集、预处理、数据集管理、训练、识别五个步骤组织。",
+            "当前任务按采集、预处理、数据集、训练、识别五个步骤顺序推进。",
             right_widget=StatusBadge("步骤 1 就绪", "info", size="sm"),
             compact=True,
         )
@@ -90,7 +90,7 @@ class OverviewPage(QWidget):
         primary_button.setObjectName("PrimaryButton")
         primary_button.clicked.connect(lambda: self.navigate_requested.emit("capture"))
 
-        hint_label = QLabel("首屏仅保留任务状态和模块入口。")
+        hint_label = QLabel("优先沿主流程推进，样本整理完成后再进入训练与识别。")
         hint_label.setObjectName("MutedText")
 
         action_row.addWidget(primary_button, 0, Qt.AlignmentFlag.AlignLeft)
@@ -106,7 +106,7 @@ class OverviewPage(QWidget):
 
         section = SectionCard(
             "流程入口",
-            "按任务步骤进入对应模块。",
+            "按业务顺序进入对应模块，保持单一主流程。",
             compact=True,
         )
 
@@ -117,7 +117,7 @@ class OverviewPage(QWidget):
         steps = [
             ("capture", "01", "数据采集", "待执行", "设备接入与记录控制"),
             ("preprocess", "02", "信号预处理", "待处理", "原始文件筛选与样本生成"),
-            ("dataset", "03", "数据集管理", "待整理", "公开数据导入、标注维护与数据集构建"),
+            ("dataset", "03", "数据集管理", "待整理", "已处理样本复核、标签维护与数据集生成"),
             ("train", "04", "模型训练", "可训练", "训练评估与模型导出"),
             ("recognition", "05", "无人机识别", "待识别", "类型识别与个体指纹识别"),
         ]
@@ -179,13 +179,14 @@ class OverviewPage(QWidget):
     def _build_metrics_section(self) -> SectionCard:
         """Build the compact key metrics section."""
 
-        section = SectionCard("关键指标", "显示当前工程常用指标。", compact=True)
+        section = SectionCard("关键指标", "显示当前主流程常用指标。", compact=True)
 
         row = QHBoxLayout()
         row.setSpacing(12)
-        row.addWidget(MetricCard("数据集版本", "v003", compact=True))
-        row.addWidget(MetricCard("最新模型精度", "94.7%", accent_color="#7CB98B", compact=True))
-        row.addWidget(MetricCard("当前识别模型", "iqcnn_v003", accent_color="#C59A63", compact=True))
+        row.addWidget(MetricCard("原始任务数", "12", compact=True))
+        row.addWidget(MetricCard("已处理样本数", "148", accent_color="#7CB98B", compact=True))
+        row.addWidget(MetricCard("当前数据集版本", "v003", accent_color="#5EA6D3", compact=True))
+        row.addWidget(MetricCard("最新训练模型", "rf_type_v003", accent_color="#C59A63", compact=True))
 
         section.body_layout.addLayout(row)
         return section

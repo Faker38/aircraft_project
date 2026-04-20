@@ -1,14 +1,17 @@
-"""Preprocess page for signal filtering, slicing, and CAP preview."""
+"""Preprocess page for CAP preview, parameter configuration, and algorithm execution."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -20,18 +23,34 @@ from PySide6.QtWidgets import (
 )
 
 from config import BASE_DIR
-from services import CapProbeError, CapProbeResult, probe_cap_file
+from services import (
+    CapProbeError,
+    CapProbeResult,
+    PreprocessRunConfig,
+    PreprocessRunResult,
+    default_preprocess_output_dir,
+    probe_cap_file,
+    resolve_default_model_weights_path,
+)
+from ui.preprocess_run_worker import PreprocessRunWorker
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
 class PreprocessPage(QWidget):
-    """Workflow page for signal preprocessing and CAP import preview."""
+    """Workflow page for CAP preview and preprocess execution."""
+
+    navigate_requested = Signal(str)
+    sample_records_generated = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the preprocess page."""
 
         super().__init__(parent)
         self.cap_records = self._build_cap_records()
+        self.current_probe_result: CapProbeResult | None = None
+        self.current_run_result: PreprocessRunResult | None = None
+        self._run_thread: QThread | None = None
+        self._run_worker: PreprocessRunWorker | None = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -46,21 +65,23 @@ class PreprocessPage(QWidget):
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
         self.file_metric = MetricCard("CAP 文件", "0", compact=True)
-        self.preview_metric = MetricCard("导入预览", "待读取", accent_color="#7CB98B", compact=True)
-        self.slice_metric = MetricCard("当前切片", "65536", accent_color="#C59A63", compact=True)
+        self.status_metric = MetricCard("任务状态", "待执行", accent_color="#7CB98B", compact=True)
+        self.detected_metric = MetricCard("检出信号段", "0", accent_color="#C59A63", compact=True)
+        self.output_metric = MetricCard("输出样本", "0", accent_color="#5EA6D3", compact=True)
         metrics_row.addWidget(self.file_metric)
-        metrics_row.addWidget(self.preview_metric)
-        metrics_row.addWidget(self.slice_metric)
+        metrics_row.addWidget(self.status_metric)
+        metrics_row.addWidget(self.detected_metric)
+        metrics_row.addWidget(self.output_metric)
         content_layout.addLayout(metrics_row)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
         top_row.addWidget(self._build_file_card(), 3)
         top_row.addWidget(self._build_config_card(), 2)
-
         content_layout.addLayout(top_row)
+
         content_layout.addWidget(self._build_probe_card())
-        content_layout.addWidget(self._build_flow_card())
+        content_layout.addWidget(self._build_result_card())
         content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -99,7 +120,7 @@ class PreprocessPage(QWidget):
     def _build_file_card(self) -> SectionCard:
         """Create the CAP file selection card."""
 
-        section = SectionCard("原始文件", "选择 CAP 文件并执行只读导入预览。", compact=True)
+        section = SectionCard("原始文件", "选择 CAP 文件后，可先执行头信息预览，再发起预处理任务。", compact=True)
 
         self.file_table = QTableWidget(0, 5)
         self.file_table.setHorizontalHeaderLabels(["文件名", "样本类型", "文件大小", "存放位置", "状态"])
@@ -113,10 +134,10 @@ class PreprocessPage(QWidget):
 
         self.file_table.setRowCount(len(self.cap_records))
         for row_index, record in enumerate(self.cap_records):
-            path = record["path"]
+            path = Path(record["path"])
             exists = bool(record["exists"])
             size_text = self._format_bytes(path.stat().st_size) if exists else "-"
-            status_text = "可预览" if exists else "文件缺失"
+            status_text = "可联调" if exists else "文件缺失"
             values = [
                 str(record["name"]),
                 str(record["kind"]),
@@ -140,7 +161,7 @@ class PreprocessPage(QWidget):
         action_row.addWidget(self.file_status_badge)
         action_row.addStretch(1)
 
-        self.file_status_label = QLabel("当前预览为只读探针，不写入样本库，也不生成预处理结果。")
+        self.file_status_label = QLabel("当前支持先预览 CAP 头字段，再按同一文件发起预处理运行。")
         self.file_status_label.setObjectName("MutedText")
         self.file_status_label.setWordWrap(True)
 
@@ -152,59 +173,120 @@ class PreprocessPage(QWidget):
     def _build_config_card(self) -> SectionCard:
         """Create the preprocess configuration card."""
 
+        self.run_status_badge = StatusBadge("待执行", "info", size="sm")
         section = SectionCard(
             "预处理参数",
-            "当前仅保留参数界面，真实切片服务后续接入。",
-            right_widget=StatusBadge("待处理", "info", size="sm"),
+            "解析 CAP 头后自动绑定带宽、采样率和中心频率，用户只配置必要的筛选参数。",
+            right_widget=self.run_status_badge,
             compact=True,
         )
+
+        parsed_layout = QFormLayout()
+        parsed_layout.setHorizontalSpacing(12)
+        parsed_layout.setVerticalSpacing(10)
+
+        self.bandwidth_value = QLabel("-")
+        self.bandwidth_value.setObjectName("ValueLabel")
+        self.sample_rate_value = QLabel("-")
+        self.sample_rate_value.setObjectName("ValueLabel")
+        self.center_freq_value = QLabel("-")
+        self.center_freq_value.setObjectName("ValueLabel")
+
+        parsed_layout.addRow("分析带宽", self.bandwidth_value)
+        parsed_layout.addRow("实际采样率", self.sample_rate_value)
+        parsed_layout.addRow("中心频率", self.center_freq_value)
 
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
 
-        slice_length_input = QSpinBox()
-        slice_length_input.setRange(1024, 262144)
-        slice_length_input.setSingleStep(1024)
-        slice_length_input.setValue(65536)
+        self.slice_length_input = QSpinBox()
+        self.slice_length_input.setRange(1024, 262144)
+        self.slice_length_input.setSingleStep(1024)
+        self.slice_length_input.setValue(4096)
 
-        threshold_input = QDoubleSpinBox()
-        threshold_input.setRange(0.0, 30.0)
-        threshold_input.setDecimals(1)
-        threshold_input.setSuffix(" dB")
-        threshold_input.setValue(6.0)
+        self.threshold_input = QDoubleSpinBox()
+        self.threshold_input.setRange(0.0, 30.0)
+        self.threshold_input.setDecimals(1)
+        self.threshold_input.setSuffix(" dB")
+        self.threshold_input.setValue(10.0)
 
-        noise_floor_input = QDoubleSpinBox()
-        noise_floor_input.setRange(-120.0, 0.0)
-        noise_floor_input.setDecimals(1)
-        noise_floor_input.setSuffix(" dBm")
-        noise_floor_input.setValue(-82.0)
+        self.noise_floor_input = QDoubleSpinBox()
+        self.noise_floor_input.setRange(-120.0, 0.0)
+        self.noise_floor_input.setDecimals(1)
+        self.noise_floor_input.setSuffix(" dBm")
+        self.noise_floor_input.setValue(-90.0)
 
-        bandpass_checkbox = QCheckBox("启用带通滤波")
-        bandpass_checkbox.setChecked(True)
+        self.min_bandwidth_input = QDoubleSpinBox()
+        self.min_bandwidth_input.setRange(0.0, 80.0)
+        self.min_bandwidth_input.setDecimals(1)
+        self.min_bandwidth_input.setSuffix(" MHz")
+        self.min_bandwidth_input.setValue(6.0)
 
-        form_layout.addRow("切片长度", slice_length_input)
-        form_layout.addRow("能量阈值", threshold_input)
-        form_layout.addRow("噪声基底", noise_floor_input)
-        form_layout.addRow("滤波选项", bandpass_checkbox)
+        self.min_duration_input = QDoubleSpinBox()
+        self.min_duration_input.setRange(0.01, 1000.0)
+        self.min_duration_input.setDecimals(2)
+        self.min_duration_input.setSuffix(" ms")
+        self.min_duration_input.setValue(0.05)
 
-        process_progress = QProgressBar()
-        process_progress.setValue(42)
+        self.confidence_input = QDoubleSpinBox()
+        self.confidence_input.setRange(0.0, 1.0)
+        self.confidence_input.setDecimals(2)
+        self.confidence_input.setSingleStep(0.01)
+        self.confidence_input.setValue(0.85)
+
+        self.bandpass_checkbox = QCheckBox("启用带通滤波")
+        self.bandpass_checkbox.setChecked(True)
+
+        default_output_dir = default_preprocess_output_dir()
+        self.output_dir_input = QLineEdit(str(default_output_dir))
+        self.output_dir_input.setPlaceholderText(str(default_output_dir))
+
+        try:
+            default_model_path = resolve_default_model_weights_path()
+            default_model_text = str(default_model_path)
+        except Exception:
+            default_model_text = ""
+        self.model_path_input = QLineEdit(default_model_text)
+        self.model_path_input.setPlaceholderText("选择或填写模型权重路径")
+
+        form_layout.addRow("切片长度", self.slice_length_input)
+        form_layout.addRow("能量阈值", self.threshold_input)
+        form_layout.addRow("噪声基底", self.noise_floor_input)
+        form_layout.addRow("最小带宽", self.min_bandwidth_input)
+        form_layout.addRow("最小时长", self.min_duration_input)
+        form_layout.addRow("置信度阈值", self.confidence_input)
+        form_layout.addRow("滤波选项", self.bandpass_checkbox)
+        form_layout.addRow("输出目录", self.output_dir_input)
+        form_layout.addRow("模型权重", self.model_path_input)
+
+        self.process_progress = QProgressBar()
+        self.process_progress.setRange(0, 100)
+        self.process_progress.setValue(0)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(10)
-        start_button = QPushButton("开始预处理")
-        start_button.setObjectName("PrimaryButton")
-        stop_button = QPushButton("停止任务")
-        stop_button.setObjectName("DangerButton")
+        self.start_button = QPushButton("开始预处理")
+        self.start_button.setObjectName("PrimaryButton")
+        self.start_button.clicked.connect(self._start_preprocess_run)
 
-        button_row.addWidget(start_button)
-        button_row.addWidget(stop_button)
+        self.goto_dataset_button = QPushButton("进入数据集管理")
+        self.goto_dataset_button.clicked.connect(lambda: self.navigate_requested.emit("dataset"))
+        self.goto_dataset_button.setEnabled(False)
+
+        button_row.addWidget(self.start_button)
+        button_row.addWidget(self.goto_dataset_button)
         button_row.addStretch(1)
 
-        section.body_layout.addWidget(process_progress)
+        self.config_status_label = QLabel("当前默认按 0x200 / 512 字节头长试跑，算法与界面保持同一口径。")
+        self.config_status_label.setObjectName("MutedText")
+        self.config_status_label.setWordWrap(True)
+
+        section.body_layout.addLayout(parsed_layout)
+        section.body_layout.addWidget(self.process_progress)
         section.body_layout.addLayout(form_layout)
         section.body_layout.addLayout(button_row)
+        section.body_layout.addWidget(self.config_status_label)
         return section
 
     def _build_probe_card(self) -> SectionCard:
@@ -213,7 +295,7 @@ class PreprocessPage(QWidget):
         self.preview_status_badge = StatusBadge("待读取", "info", size="sm")
         section = SectionCard(
             "CAP 导入预览",
-            "显示已验证头字段、IQ 统计摘要和少量样本预览。",
+            "按当前试跑口径展示带宽、实际采样率、中心频率和少量 IQ 预览。",
             right_widget=self.preview_status_badge,
             compact=True,
         )
@@ -226,9 +308,9 @@ class PreprocessPage(QWidget):
         self.preview_file_value.setObjectName("ValueLabel")
         self.preview_size_value = QLabel("-")
         self.preview_size_value.setObjectName("ValueLabel")
-        self.preview_header_value = QLabel("0x2C00 / 11264 B")
+        self.preview_header_value = QLabel("0x200 / 512 B")
         self.preview_header_value.setObjectName("ValueLabel")
-        self.preview_offset_value = QLabel("0x2C00")
+        self.preview_offset_value = QLabel("0x200")
         self.preview_offset_value.setObjectName("ValueLabel")
         self.preview_scope_value = QLabel("-")
         self.preview_scope_value.setObjectName("ValueLabel")
@@ -243,7 +325,7 @@ class PreprocessPage(QWidget):
         self.preview_note_label.setObjectName("MutedText")
         self.preview_note_label.setWordWrap(True)
 
-        self.preview_field_table = QTableWidget(5, 3)
+        self.preview_field_table = QTableWidget(6, 3)
         self.preview_field_table.setHorizontalHeaderLabels(["字段", "偏移", "值"])
         self.preview_field_table.horizontalHeader().setStretchLastSection(True)
         self.preview_field_table.verticalHeader().setVisible(False)
@@ -253,7 +335,8 @@ class PreprocessPage(QWidget):
 
         field_rows = [
             ("版本号", "0x0000", "-"),
-            ("采样率", "0x0010", "-"),
+            ("分析带宽", "0x0010", "-"),
+            ("实际采样率", "0x0010 × 1.28", "-"),
             ("中心频率", "0x0018", "-"),
             ("帧采样数", "0x0110", "-"),
             ("块大小", "0x0114", "-"),
@@ -292,41 +375,76 @@ class PreprocessPage(QWidget):
         section.body_layout.addWidget(self.preview_iq_table)
         return section
 
-    def _build_flow_card(self) -> SectionCard:
-        """Create the preprocessing summary card."""
+    def _build_result_card(self) -> SectionCard:
+        """Create the preprocess result card."""
 
-        section = SectionCard("处理摘要", "导入预览 -> 归一化 -> 切片 -> 样本输出", compact=True)
+        self.result_status_badge = StatusBadge("待执行", "info", size="sm")
+        section = SectionCard(
+            "预处理结果",
+            "显示本次任务状态、输出目录、日志和有效信号段结果。",
+            right_widget=self.result_status_badge,
+            compact=True,
+        )
 
-        flow_row = QHBoxLayout()
-        flow_row.setSpacing(12)
+        summary_form = QFormLayout()
+        summary_form.setHorizontalSpacing(12)
+        summary_form.setVerticalSpacing(10)
 
-        items = [
-            ("01", "导入预览", "读取 .cap 头信息并确认 IQ 数据布局"),
-            ("02", "信号筛选", "去偏置并执行滤波"),
-            ("03", "样本切片", "提取有效片段并生成样本"),
-            ("04", "结果输出", "写入样本与统计信息"),
-        ]
+        self.run_state_value = QLabel("待执行")
+        self.run_state_value.setObjectName("ValueLabel")
+        self.detected_value = QLabel("0")
+        self.detected_value.setObjectName("ValueLabel")
+        self.output_value = QLabel("0")
+        self.output_value.setObjectName("ValueLabel")
+        self.output_dir_value = QLabel("-")
+        self.output_dir_value.setObjectName("ValueLabel")
+        self.output_dir_value.setWordWrap(True)
 
-        for index, title, hint in items:
-            block = QWidget()
-            layout = QVBoxLayout(block)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(4)
+        summary_form.addRow("任务状态", self.run_state_value)
+        summary_form.addRow("检出信号段", self.detected_value)
+        summary_form.addRow("输出样本数", self.output_value)
+        summary_form.addRow("输出目录", self.output_dir_value)
 
-            index_label = QLabel(index)
-            index_label.setObjectName("FlowIndex")
-            title_label = QLabel(title)
-            title_label.setObjectName("FlowTitle")
-            hint_label = QLabel(hint)
-            hint_label.setObjectName("FlowHint")
-            hint_label.setWordWrap(True)
+        self.result_message_label = QLabel("等待预处理任务启动。")
+        self.result_message_label.setObjectName("MutedText")
+        self.result_message_label.setWordWrap(True)
 
-            layout.addWidget(index_label)
-            layout.addWidget(title_label)
-            layout.addWidget(hint_label)
-            flow_row.addWidget(block)
+        log_and_table_row = QHBoxLayout()
+        log_and_table_row.setSpacing(12)
 
-        section.body_layout.addLayout(flow_row)
+        self.log_output = QPlainTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setPlainText("等待日志输出。")
+        self.log_output.setMinimumHeight(220)
+        configure_scrollable(self.log_output)
+
+        self.segment_table = QTableWidget(0, 10)
+        self.segment_table.setHorizontalHeaderLabels(
+            [
+                "片段编号",
+                "起始点",
+                "结束点",
+                "时长(ms)",
+                "中心频率(Hz)",
+                "带宽(Hz)",
+                "SNR(dB)",
+                "置信度",
+                "输出文件",
+                "状态",
+            ]
+        )
+        self.segment_table.horizontalHeader().setStretchLastSection(True)
+        self.segment_table.verticalHeader().setVisible(False)
+        self.segment_table.setAlternatingRowColors(True)
+        self.segment_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        configure_scrollable(self.segment_table)
+
+        log_and_table_row.addWidget(self.log_output, 2)
+        log_and_table_row.addWidget(self.segment_table, 3)
+
+        section.body_layout.addLayout(summary_form)
+        section.body_layout.addWidget(self.result_message_label)
+        section.body_layout.addLayout(log_and_table_row)
         return section
 
     def _selected_record(self) -> dict[str, object] | None:
@@ -343,18 +461,22 @@ class PreprocessPage(QWidget):
         record = self._selected_record()
         if record is None:
             self.probe_button.setEnabled(False)
+            self.start_button.setEnabled(False)
             self.file_status_badge.set_status("未选择", "warning", size="sm")
-            self.file_status_label.setText("请选择一条 CAP 文件记录后，再执行导入预览。")
+            self.file_status_label.setText("请选择一条 CAP 文件记录后，再执行预览或预处理。")
             return
 
         path = Path(record["path"])
         exists = bool(record["exists"])
-        self.probe_button.setEnabled(exists)
+        self.probe_button.setEnabled(exists and not self._is_running())
+        self.start_button.setEnabled(exists and not self._is_running())
         if exists:
-            self.file_status_badge.set_status("可预览", "success", size="sm")
+            self.file_status_badge.set_status("可联调", "success", size="sm")
             self.file_status_label.setText(
-                f"已选文件：{path.name} | 路径：{path} | 当前操作为只读头信息预览。"
+                f"已选文件：{path.name} | 路径：{path} | 可继续执行头信息预览或预处理运行。"
             )
+            if not self.output_dir_input.text().strip():
+                self.output_dir_input.setText(str(self._default_output_dir_for(path)))
         else:
             self.file_status_badge.set_status("缺失", "danger", size="sm")
             self.file_status_label.setText(f"未找到文件：{path}。请确认样本文件位于工作区根目录。")
@@ -372,31 +494,32 @@ class PreprocessPage(QWidget):
             result = probe_cap_file(path)
         except CapProbeError as exc:
             self._reset_preview(str(exc), badge_level="danger")
-            self.preview_metric.set_value("异常")
+            self.status_metric.set_value("异常")
             return
 
         self._apply_probe_result(result)
-        self.preview_metric.set_value("已读取")
 
     def _apply_probe_result(self, result: CapProbeResult) -> None:
-        """Render a probe result into the preview widgets."""
+        """Render a probe result into the preview widgets and config summary."""
 
+        self.current_probe_result = result
         self.preview_status_badge.set_status("预览就绪", "success", size="sm")
         self.preview_file_value.setText(result.path.name)
         self.preview_size_value.setText(self._format_bytes(result.file_size))
-        self.preview_header_value.setText(f"0x2C00 / {result.header_length} B")
-        self.preview_offset_value.setText("0x2C00")
+        self.preview_header_value.setText(f"0x{result.header_length:03X} / {result.header_length} B")
+        self.preview_offset_value.setText(f"0x{result.header_length:03X}")
         self.preview_scope_value.setText(f"前 {result.statistics_window_pairs:,} 组 IQ")
 
-        note_text = "当前仅展示已验证字段，其余头部参数仍标记为待确认。"
+        note_text = "当前按 0x200 / 512 字节头长试跑，带宽与实际采样率已拆分展示。"
         if result.is_partial_capture:
-            note_text = "当前为截取样本，仅代表前 1MB 数据窗口；不作为完整预处理结果。"
+            note_text = "当前为截取样本，仅代表前 1MB 数据窗口；用于快速验证头字段与早期 IQ 数据。"
         self.preview_note_label.setText(
             note_text + " 待确认字段：" + "、".join(result.unresolved_fields)
         )
 
         field_values = [
             result.version,
+            f"{result.bandwidth_hz / 1_000_000:.3f} MHz",
             f"{result.sample_rate_hz / 1_000_000:.3f} MHz",
             f"{result.center_frequency_hz / 1_000_000:.3f} MHz",
             str(result.frame_sample_count),
@@ -420,15 +543,194 @@ class PreprocessPage(QWidget):
             for column, value in enumerate(values):
                 self._set_table_value(self.preview_iq_table, row_index, column, value)
 
+        self.bandwidth_value.setText(f"{result.bandwidth_hz / 1_000_000:.3f} MHz")
+        self.sample_rate_value.setText(f"{result.sample_rate_hz / 1_000_000:.3f} MHz")
+        self.center_freq_value.setText(f"{result.center_frequency_hz / 1_000_000:.3f} MHz")
+        self.status_metric.set_value("预览就绪")
+        self.slice_length_input.setValue(self.slice_length_input.value())
+
+    def _start_preprocess_run(self) -> None:
+        """Collect the current parameters and start the preprocess worker."""
+
+        if self._is_running():
+            return
+
+        record = self._selected_record()
+        if record is None:
+            self.result_message_label.setText("请先选择一条 CAP 文件记录。")
+            return
+
+        if self.current_probe_result is None or Path(record["path"]) != self.current_probe_result.path:
+            self._load_selected_cap_preview()
+            if self.current_probe_result is None:
+                return
+
+        input_path = Path(record["path"])
+        config = PreprocessRunConfig(
+            input_file_path=str(input_path),
+            slice_length=self.slice_length_input.value(),
+            energy_threshold_db=self.threshold_input.value(),
+            noise_floor_dbm=self.noise_floor_input.value(),
+            min_bandwidth_mhz=self.min_bandwidth_input.value(),
+            min_duration_ms=self.min_duration_input.value(),
+            enable_bandpass=self.bandpass_checkbox.isChecked(),
+            sample_output_dir=self.output_dir_input.text().strip() or str(self._default_output_dir_for(input_path)),
+            model_weights_path=self.model_path_input.text().strip(),
+            ai_confidence_threshold=self.confidence_input.value(),
+        )
+
+        self._set_running_state(True)
+        self.current_run_result = None
+        self.result_message_label.setText("预处理任务已提交，正在后台执行。")
+        self.run_state_value.setText("运行中")
+        self.result_status_badge.set_status("运行中", "info", size="sm")
+        self.run_status_badge.set_status("运行中", "info", size="sm")
+        self.status_metric.set_value("运行中")
+        self.output_dir_value.setText(config.sample_output_dir)
+        self.log_output.setPlainText("任务启动中，请稍候...\n")
+        self.segment_table.setRowCount(0)
+
+        thread = QThread(self)
+        worker = PreprocessRunWorker(config)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.started.connect(self._on_run_started)
+        worker.finished.connect(self._on_run_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(self._on_run_failed)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_run_worker)
+        thread.finished.connect(thread.deleteLater)
+
+        self._run_thread = thread
+        self._run_worker = worker
+        thread.start()
+
+    def _on_run_started(self, input_file_path: str) -> None:
+        """Update the UI when the worker starts running."""
+
+        self.log_output.setPlainText(f"启动预处理任务：{Path(input_file_path).name}\n")
+
+    def _on_run_finished(self, result: PreprocessRunResult) -> None:
+        """Render a finished preprocess result."""
+
+        self.current_run_result = result
+        self._set_running_state(False)
+
+        if result.cap_info is not None:
+            self._apply_probe_result(result.cap_info)
+
+        self.detected_metric.set_value(str(result.detected_segment_count))
+        self.output_metric.set_value(str(result.output_sample_count))
+        self.detected_value.setText(str(result.detected_segment_count))
+        self.output_value.setText(str(result.output_sample_count))
+        self.output_dir_value.setText(result.sample_output_dir)
+        self.log_output.setPlainText("\n".join(result.logs) if result.logs else "本次任务未返回日志。")
+        self._render_segment_table(result.segments)
+
+        if result.success:
+            self.run_state_value.setText("完成")
+            self.result_message_label.setText(result.message or "预处理完成。")
+            self.result_status_badge.set_status("处理完成", "success", size="sm")
+            self.run_status_badge.set_status("处理完成", "success", size="sm")
+            self.status_metric.set_value("完成")
+            self.goto_dataset_button.setEnabled(bool(result.sample_records))
+            if result.sample_records:
+                self.sample_records_generated.emit(result.sample_records)
+                self.config_status_label.setText(
+                    f"本次已同步 {len(result.sample_records)} 条有效样本记录，可直接进入数据集管理继续后续流程。"
+                )
+            else:
+                self.config_status_label.setText("本次未生成可同步的有效样本记录，可继续调整阈值后重试。")
+        else:
+            self.run_state_value.setText("失败")
+            self.result_message_label.setText(result.message or "预处理失败。")
+            self.result_status_badge.set_status("处理失败", "danger", size="sm")
+            self.run_status_badge.set_status("处理失败", "danger", size="sm")
+            self.status_metric.set_value("失败")
+            self.goto_dataset_button.setEnabled(False)
+
+    def _on_run_failed(self, message: str) -> None:
+        """Render one worker-side failure."""
+
+        self._set_running_state(False)
+        self.run_state_value.setText("失败")
+        self.result_message_label.setText(message)
+        self.result_status_badge.set_status("处理失败", "danger", size="sm")
+        self.run_status_badge.set_status("处理失败", "danger", size="sm")
+        self.status_metric.set_value("失败")
+        self.log_output.setPlainText(message)
+        self.goto_dataset_button.setEnabled(False)
+
+    def _clear_run_worker(self) -> None:
+        """Reset worker references after the thread exits."""
+
+        self._run_thread = None
+        self._run_worker = None
+
+    def _render_segment_table(self, segments: list[dict[str, object]]) -> None:
+        """Render normalized segment rows into the result table."""
+
+        self.segment_table.setRowCount(len(segments))
+        for row_index, segment in enumerate(segments):
+            values = [
+                str(segment.get("segment_id", "")),
+                str(segment.get("start_sample", "")),
+                str(segment.get("end_sample", "")),
+                f"{float(segment.get('duration_ms', 0.0)):.2f}",
+                f"{float(segment.get('center_freq_hz', 0.0)):.1f}",
+                f"{float(segment.get('bandwidth_hz', 0.0)):.1f}",
+                f"{float(segment.get('snr_db', 0.0)):.2f}",
+                f"{float(segment.get('score', 0.0)):.4f}",
+                str(segment.get("output_file_path", "")),
+                str(segment.get("status", "")),
+            ]
+            for column, value in enumerate(values):
+                self._set_table_value(self.segment_table, row_index, column, value)
+
+    def _set_running_state(self, running: bool) -> None:
+        """Enable or disable controls based on the current worker state."""
+
+        self.probe_button.setEnabled(not running)
+        self.start_button.setEnabled(not running and self._selected_record() is not None and bool(self._selected_record()["exists"]))
+        self.file_table.setEnabled(not running)
+        self.slice_length_input.setEnabled(not running)
+        self.threshold_input.setEnabled(not running)
+        self.noise_floor_input.setEnabled(not running)
+        self.min_bandwidth_input.setEnabled(not running)
+        self.min_duration_input.setEnabled(not running)
+        self.confidence_input.setEnabled(not running)
+        self.bandpass_checkbox.setEnabled(not running)
+        self.output_dir_input.setEnabled(not running)
+        self.model_path_input.setEnabled(not running)
+
+        if running:
+            self.process_progress.setRange(0, 0)
+        else:
+            self.process_progress.setRange(0, 100)
+            self.process_progress.setValue(100 if self.current_run_result and self.current_run_result.success else 0)
+
+    def _is_running(self) -> bool:
+        """Return whether a preprocess task is currently active."""
+
+        return self._run_thread is not None
+
     def _reset_preview(self, message: str, badge_level: str = "info") -> None:
         """Reset the preview card to a safe placeholder state."""
 
         label = "待读取" if badge_level == "info" else "读取失败"
+        self.current_probe_result = None
         self.preview_status_badge.set_status(label, badge_level, size="sm")
         self.preview_file_value.setText("-")
         self.preview_size_value.setText("-")
         self.preview_scope_value.setText("-")
         self.preview_note_label.setText(message)
+        self.bandwidth_value.setText("-")
+        self.sample_rate_value.setText("-")
+        self.center_freq_value.setText("-")
 
         for row_index in range(self.preview_field_table.rowCount()):
             self._set_table_value(self.preview_field_table, row_index, 2, "-")
@@ -445,6 +747,11 @@ class PreprocessPage(QWidget):
             item = QTableWidgetItem()
             table.setItem(row, column, item)
         item.setText(value)
+
+    def _default_output_dir_for(self, path: Path) -> Path:
+        """Return the default output directory for one CAP file."""
+
+        return default_preprocess_output_dir() / path.stem
 
     def _format_bytes(self, size: int) -> str:
         """Format one file size for compact preview output."""

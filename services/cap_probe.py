@@ -7,7 +7,7 @@ from pathlib import Path
 import struct
 
 
-HEADER_LENGTH = 0x2C00
+HEADER_LENGTH = 0x200
 PREVIEW_PAIR_COUNT = 12
 STAT_WINDOW_BYTES = 1024 * 1024
 
@@ -40,6 +40,7 @@ class CapProbeResult:
     is_partial_capture: bool
     version: str
     header_length: int
+    bandwidth_hz: float
     sample_rate_hz: float
     center_frequency_hz: float
     frame_sample_count: int
@@ -52,7 +53,7 @@ class CapProbeResult:
 
 
 def probe_cap_file(path: Path) -> CapProbeResult:
-    """Read verified CAP header fields and a small IQ preview window."""
+    """Read CAP header fields and a small IQ preview window."""
 
     file_path = Path(path)
     if file_path.suffix.lower() != ".cap":
@@ -76,7 +77,8 @@ def probe_cap_file(path: Path) -> CapProbeResult:
         if not version.startswith("B."):
             raise CapProbeError("文件头版本标记异常，不符合当前 CAP 预览规则。")
 
-        sample_rate_hz = struct.unpack(">d", header[0x0010:0x0018])[0]
+        bandwidth_hz = struct.unpack(">d", header[0x0010:0x0018])[0]
+        sample_rate_hz = bandwidth_hz * 1.28
         center_frequency_hz = struct.unpack(">d", header[0x0018:0x0020])[0]
         frame_sample_count = struct.unpack(">I", header[0x0110:0x0114])[0]
         block_size = struct.unpack(">I", header[0x0114:0x0118])[0]
@@ -93,7 +95,7 @@ def probe_cap_file(path: Path) -> CapProbeResult:
     unresolved_fields = (
         "0x0008 未确认参数",
         "0x0020 - 0x00FF 其他设备参数",
-        "带宽/增益/时间戳编码方式待进一步验证",
+        "带宽/增益/时间戳编码方式仍需更多样本交叉验证",
     )
     return CapProbeResult(
         path=file_path,
@@ -101,6 +103,7 @@ def probe_cap_file(path: Path) -> CapProbeResult:
         is_partial_capture=file_path.name.lower() == "head.cap",
         version=version,
         header_length=HEADER_LENGTH,
+        bandwidth_hz=bandwidth_hz,
         sample_rate_hz=sample_rate_hz,
         center_frequency_hz=center_frequency_hz,
         frame_sample_count=frame_sample_count,

@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
         "overview": ("工程总览", "查看当前流程阶段、系统状态和任务入口。"),
         "capture": ("步骤 1 · 数据采集", "完成设备接入、参数配置和原始文件记录。"),
         "preprocess": ("步骤 2 · 信号预处理", "完成信号筛选、切片和样本生成。"),
-        "dataset": ("步骤 3 · 数据集管理", "完成公开数据导入、标注维护与数据集构建。"),
+        "dataset": ("步骤 3 · 数据集管理", "完成已处理样本复核、标签维护与数据集构建。"),
         "train": ("步骤 4 · 模型训练", "执行训练评估并导出模型。"),
         "recognition": ("步骤 5 · 无人机识别", "执行类型识别与个体指纹识别。"),
     }
@@ -175,6 +175,8 @@ class MainWindow(QMainWindow):
         train_page = TrainPage()
         recognition_page = RecognitionPage()
 
+        preprocess_page.navigate_requested.connect(self.select_page)
+        preprocess_page.sample_records_generated.connect(dataset_page.add_preprocess_records)
         dataset_page.dataset_versions_updated.connect(train_page.set_dataset_versions)
         dataset_page.sample_records_updated.connect(recognition_page.set_sample_records)
 
