@@ -1,4 +1,4 @@
-"""Application entry point for the RF identification desktop UI."""
+"""桌面端应用入口。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from ui.styles import AppStyles
 
 
 def main() -> int:
-    """Start the Qt application."""
+    """启动 Qt 应用。"""
 
     ensure_project_dirs()
 

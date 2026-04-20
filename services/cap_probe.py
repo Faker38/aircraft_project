@@ -1,4 +1,4 @@
-"""Read-only CAP probe utilities for previewing monitored IQ files."""
+"""CAP 只读探针工具：用于预览头字段和 IQ 摘要。"""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ STAT_WINDOW_BYTES = 1024 * 1024
 
 
 class CapProbeError(RuntimeError):
-    """Raised when a CAP file cannot be probed safely."""
+    """当 CAP 文件无法安全探测时抛出。"""
 
 
 @dataclass(frozen=True)
 class IQStatistics:
-    """Summary statistics for one IQ sample window."""
+    """一个 IQ 采样窗口的统计摘要。"""
 
     sample_count: int
     i_mean: float
@@ -33,7 +33,7 @@ class IQStatistics:
 
 @dataclass(frozen=True)
 class CapProbeResult:
-    """Structured preview data extracted from a CAP file."""
+    """从 CAP 文件中提取出的结构化预览结果。"""
 
     path: Path
     file_size: int
@@ -53,7 +53,7 @@ class CapProbeResult:
 
 
 def probe_cap_file(path: Path) -> CapProbeResult:
-    """Read CAP header fields and a small IQ preview window."""
+    """读取 CAP 头字段和少量 IQ 预览窗口。"""
 
     file_path = Path(path)
     if file_path.suffix.lower() != ".cap":
@@ -77,6 +77,7 @@ def probe_cap_file(path: Path) -> CapProbeResult:
         if not version.startswith("B."):
             raise CapProbeError("文件头版本标记异常，不符合当前 CAP 预览规则。")
 
+        # 当前联调口径：0x0010 先解释为分析带宽，再按 1.28 推导实际采样率。
         bandwidth_hz = struct.unpack(">d", header[0x0010:0x0018])[0]
         sample_rate_hz = bandwidth_hz * 1.28
         center_frequency_hz = struct.unpack(">d", header[0x0018:0x0020])[0]
@@ -117,7 +118,7 @@ def probe_cap_file(path: Path) -> CapProbeResult:
 
 
 def _decode_iq_pairs(data: bytes) -> list[tuple[int, int]]:
-    """Decode a CAP IQ byte block as big-endian int16 I/Q pairs."""
+    """把 CAP IQ 字节块按大端 int16 的 I/Q 对解码。"""
 
     if not data:
         return []
@@ -126,7 +127,7 @@ def _decode_iq_pairs(data: bytes) -> list[tuple[int, int]]:
 
 
 def _build_statistics(data: bytes) -> IQStatistics:
-    """Compute summary statistics for a limited IQ data window."""
+    """为限定 IQ 数据窗口计算统计量。"""
 
     pairs = _decode_iq_pairs(data)
     if not pairs:
@@ -154,7 +155,7 @@ def _build_statistics(data: bytes) -> IQStatistics:
 
 
 def _population_std(values: list[int], mean: float) -> float:
-    """Return the population standard deviation for one value sequence."""
+    """计算一组数据的总体标准差。"""
 
     variance = sum((value - mean) ** 2 for value in values) / len(values)
     return variance ** 0.5

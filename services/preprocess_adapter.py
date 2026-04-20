@@ -1,4 +1,4 @@
-"""Adapter layer that bridges the Qt workflow with the external preprocess script."""
+"""预处理适配层：负责把 Qt 页面和外部算法脚本桥接起来。"""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ DEFAULT_MODEL_CANDIDATES = (
 
 
 class PreprocessAdapterError(RuntimeError):
-    """Raised when the external preprocess integration cannot be executed safely."""
+    """当外部预处理集成无法安全执行时抛出。"""
 
 
 @dataclass(frozen=True)
 class PreprocessRunConfig:
-    """Frontend-facing preprocess request sent into the adapter."""
+    """前端页面传给适配层的预处理请求参数。"""
 
     input_file_path: str
     slice_length: int
@@ -46,7 +46,7 @@ class PreprocessRunConfig:
 
 @dataclass(frozen=True)
 class PreprocessRunResult:
-    """Normalized preprocess result consumed by the Qt page."""
+    """适配层整理后的预处理结果，供 Qt 页面直接消费。"""
 
     success: bool
     message: str
@@ -60,13 +60,13 @@ class PreprocessRunResult:
 
 
 def default_preprocess_output_dir() -> Path:
-    """Return the default output directory used by preprocess runs."""
+    """返回预处理任务默认使用的样本输出目录。"""
 
     return SAMPLES_DIR / "preprocess_output"
 
 
 def resolve_default_model_weights_path() -> Path:
-    """Return the available external model path for the preprocess script."""
+    """返回当前可用的外部模型权重路径。"""
 
     for candidate_name in DEFAULT_MODEL_CANDIDATES:
         candidate = PREPROCESS_DIR / candidate_name
@@ -80,7 +80,7 @@ def resolve_default_model_weights_path() -> Path:
 
 
 def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
-    """Execute the external preprocess script and normalize the returned payload."""
+    """执行外部预处理脚本，并把返回结果整理成页面可用结构。"""
 
     input_path = Path(config.input_file_path)
     if input_path.suffix.lower() != ".cap":
@@ -88,12 +88,14 @@ def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
     if not input_path.exists():
         raise PreprocessAdapterError("预处理输入文件不存在。")
 
+    # 先用项目内 CAP 探针验证头字段，确保页面和算法遵循同一口径。
     cap_info = probe_cap_file(input_path)
     module = _load_preprocess_module()
     run_inference_api = getattr(module, "run_inference_api", None)
     if not callable(run_inference_api):
         raise PreprocessAdapterError("外部预处理脚本未提供可调用的 run_inference_api。")
 
+    # 输出目录和权重路径在进入算法前先做一次兜底校验，避免线程里直接崩。
     output_dir = Path(config.sample_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = Path(config.model_weights_path) if config.model_weights_path else resolve_default_model_weights_path()
@@ -143,7 +145,7 @@ def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
 
 
 def _load_preprocess_module() -> ModuleType:
-    """Import the external preprocess module from the handoff directory."""
+    """从“预处理对接”目录动态加载外部预处理脚本。"""
 
     if not PREPROCESS_SCRIPT_PATH.exists():
         raise PreprocessAdapterError(f"未找到预处理脚本：{PREPROCESS_SCRIPT_PATH}")
@@ -159,7 +161,7 @@ def _load_preprocess_module() -> ModuleType:
 
 
 def _normalize_segments(raw_segments: Any) -> list[dict[str, Any]]:
-    """Return a list of normalized segment dictionaries."""
+    """把外部脚本返回的片段结果整理成统一字典列表。"""
 
     if not isinstance(raw_segments, list):
         raise PreprocessAdapterError("预处理脚本的 segments 字段必须为列表。")
@@ -190,7 +192,7 @@ def _build_sample_records(
     cap_info: CapProbeResult,
     segments: list[dict[str, Any]],
 ) -> list[SampleRecord]:
-    """Convert valid segment outputs into unified sample records."""
+    """把有效片段结果转换成统一的样本记录。"""
 
     records: list[SampleRecord] = []
     for index, segment in enumerate(segments, start=1):
@@ -201,6 +203,8 @@ def _build_sample_records(
         if not sample_path.exists():
             continue
 
+        # 这里把算法输出文件重新包装成项目统一 SampleRecord，
+        # 后续数据集管理、训练和识别页都只认这套结构。
         sample_count = _sample_count_from_file(sample_path)
         segment_stem = _slugify(sample_path.stem or f"segment_{index:03d}")
         sample_id = f"pp_{_slugify(input_path.stem)}_{segment_stem}"
@@ -229,7 +233,7 @@ def _build_sample_records(
 
 
 def _sample_count_from_file(path: Path) -> int:
-    """Return the sample length for one generated output file."""
+    """返回一个输出样本文件对应的样本点数。"""
 
     if path.suffix.lower() == ".npy":
         data = np.load(path, mmap_mode="r")
@@ -240,7 +244,7 @@ def _sample_count_from_file(path: Path) -> int:
 
 
 def _slugify(value: str) -> str:
-    """Return a stable identifier fragment for sample IDs."""
+    """生成稳定的标识片段，用于构造样本 ID。"""
 
     slug = re.sub(r"[^0-9A-Za-z_]+", "_", value)
     slug = re.sub(r"_+", "_", slug)

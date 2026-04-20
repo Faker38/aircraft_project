@@ -1,4 +1,4 @@
-"""Shared workflow records used across dataset, training, and recognition pages."""
+"""跨数据集、训练和识别页面共享的工作流记录结构。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class SampleRecord:
-    """One unified sample record used by the downstream workflow pages."""
+    """后续流程页面统一使用的样本记录。"""
 
     sample_id: str
     source_type: str
@@ -28,19 +28,19 @@ class SampleRecord:
 
     @property
     def raw_file_name(self) -> str:
-        """Return the source file name shown in compact tables."""
+        """返回紧凑表格里展示的源文件名。"""
 
         return Path(self.raw_file_path).name
 
     @property
     def sample_file_name(self) -> str:
-        """Return the generated sample file name."""
+        """返回生成后的样本文件名。"""
 
         return Path(self.sample_file_path).name
 
     @property
     def source_label(self) -> str:
-        """Return one UI-friendly label for the sample source."""
+        """返回适合界面展示的样本来源标签。"""
 
         return {
             "local_preprocess": "预处理输出",
@@ -49,7 +49,7 @@ class SampleRecord:
 
 @dataclass(frozen=True)
 class DatasetVersionRecord:
-    """One dataset version summary used by dataset and training pages."""
+    """数据集页和训练页共用的数据集版本摘要。"""
 
     version_id: str
     task_type: str

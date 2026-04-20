@@ -1,4 +1,4 @@
-"""Preprocess page for CAP preview, parameter configuration, and algorithm execution."""
+"""信号预处理页：负责 CAP 预览、参数配置和算法执行。"""
 
 from __future__ import annotations
 
@@ -37,13 +37,13 @@ from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, c
 
 
 class PreprocessPage(QWidget):
-    """Workflow page for CAP preview and preprocess execution."""
+    """CAP 预览与预处理执行页面。"""
 
     navigate_requested = Signal(str)
     sample_records_generated = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        """Initialize the preprocess page."""
+        """初始化预处理页面。"""
 
         super().__init__(parent)
         self.cap_records = self._build_cap_records()
@@ -96,7 +96,7 @@ class PreprocessPage(QWidget):
             self._reset_preview("当前未发现可用 CAP 文件。", badge_level="warning")
 
     def _build_cap_records(self) -> list[dict[str, object]]:
-        """Build the current CAP file list from the workspace root."""
+        """从工作区根目录构建当前 CAP 文件列表。"""
 
         workspace_root = BASE_DIR.parent
         records: list[dict[str, object]] = []
@@ -118,7 +118,7 @@ class PreprocessPage(QWidget):
         return records
 
     def _build_file_card(self) -> SectionCard:
-        """Create the CAP file selection card."""
+        """创建 CAP 文件选择卡片。"""
 
         section = SectionCard("原始文件", "选择 CAP 文件后，可先执行头信息预览，再发起预处理任务。", compact=True)
 
@@ -171,7 +171,7 @@ class PreprocessPage(QWidget):
         return section
 
     def _build_config_card(self) -> SectionCard:
-        """Create the preprocess configuration card."""
+        """创建预处理参数配置卡片。"""
 
         self.run_status_badge = StatusBadge("待执行", "info", size="sm")
         section = SectionCard(
@@ -181,6 +181,7 @@ class PreprocessPage(QWidget):
             compact=True,
         )
 
+        # 这三个值由 CAP 头自动解析，用户只读查看，不再手填。
         parsed_layout = QFormLayout()
         parsed_layout.setHorizontalSpacing(12)
         parsed_layout.setVerticalSpacing(10)
@@ -196,6 +197,7 @@ class PreprocessPage(QWidget):
         parsed_layout.addRow("实际采样率", self.sample_rate_value)
         parsed_layout.addRow("中心频率", self.center_freq_value)
 
+        # 这里保留的是用户真正需要调的筛选参数，避免界面被算法内部细节淹没。
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
@@ -290,7 +292,7 @@ class PreprocessPage(QWidget):
         return section
 
     def _build_probe_card(self) -> SectionCard:
-        """Create the CAP preview card."""
+        """创建 CAP 头信息预览卡片。"""
 
         self.preview_status_badge = StatusBadge("待读取", "info", size="sm")
         section = SectionCard(
@@ -376,7 +378,7 @@ class PreprocessPage(QWidget):
         return section
 
     def _build_result_card(self) -> SectionCard:
-        """Create the preprocess result card."""
+        """创建预处理结果卡片。"""
 
         self.result_status_badge = StatusBadge("待执行", "info", size="sm")
         section = SectionCard(
@@ -448,7 +450,7 @@ class PreprocessPage(QWidget):
         return section
 
     def _selected_record(self) -> dict[str, object] | None:
-        """Return the currently selected CAP record."""
+        """返回当前选中的 CAP 文件记录。"""
 
         row = self.file_table.currentRow()
         if row < 0 or row >= len(self.cap_records):
@@ -456,7 +458,7 @@ class PreprocessPage(QWidget):
         return self.cap_records[row]
 
     def _update_file_selection_state(self) -> None:
-        """Refresh selection-dependent controls for the file table."""
+        """根据当前文件选择状态刷新相关控件。"""
 
         record = self._selected_record()
         if record is None:
@@ -482,7 +484,7 @@ class PreprocessPage(QWidget):
             self.file_status_label.setText(f"未找到文件：{path}。请确认样本文件位于工作区根目录。")
 
     def _load_selected_cap_preview(self) -> None:
-        """Probe the selected CAP file and refresh the preview area."""
+        """读取当前选中 CAP 文件的头信息并刷新预览区。"""
 
         record = self._selected_record()
         if record is None:
@@ -500,9 +502,10 @@ class PreprocessPage(QWidget):
         self._apply_probe_result(result)
 
     def _apply_probe_result(self, result: CapProbeResult) -> None:
-        """Render a probe result into the preview widgets and config summary."""
+        """把探针结果渲染到预览区和参数摘要区。"""
 
         self.current_probe_result = result
+        # 页面和算法必须保持同一口径，这里会直接展示当前联调使用的头长。
         self.preview_status_badge.set_status("预览就绪", "success", size="sm")
         self.preview_file_value.setText(result.path.name)
         self.preview_size_value.setText(self._format_bytes(result.file_size))
@@ -550,7 +553,7 @@ class PreprocessPage(QWidget):
         self.slice_length_input.setValue(self.slice_length_input.value())
 
     def _start_preprocess_run(self) -> None:
-        """Collect the current parameters and start the preprocess worker."""
+        """收集当前参数并启动后台预处理任务。"""
 
         if self._is_running():
             return
@@ -566,6 +569,7 @@ class PreprocessPage(QWidget):
                 return
 
         input_path = Path(record["path"])
+        # 页面只把必要的业务参数传给适配层，采样率和中心频率由 CAP 头自动解析。
         config = PreprocessRunConfig(
             input_file_path=str(input_path),
             slice_length=self.slice_length_input.value(),
@@ -590,6 +594,7 @@ class PreprocessPage(QWidget):
         self.log_output.setPlainText("任务启动中，请稍候...\n")
         self.segment_table.setRowCount(0)
 
+        # 算法运行放到后台线程，避免主界面在处理期间卡死。
         thread = QThread(self)
         worker = PreprocessRunWorker(config)
         worker.moveToThread(thread)
@@ -610,12 +615,12 @@ class PreprocessPage(QWidget):
         thread.start()
 
     def _on_run_started(self, input_file_path: str) -> None:
-        """Update the UI when the worker starts running."""
+        """在任务开始时更新页面提示。"""
 
         self.log_output.setPlainText(f"启动预处理任务：{Path(input_file_path).name}\n")
 
     def _on_run_finished(self, result: PreprocessRunResult) -> None:
-        """Render a finished preprocess result."""
+        """渲染一次完成后的预处理结果。"""
 
         self.current_run_result = result
         self._set_running_state(False)
@@ -638,6 +643,7 @@ class PreprocessPage(QWidget):
             self.run_status_badge.set_status("处理完成", "success", size="sm")
             self.status_metric.set_value("完成")
             self.goto_dataset_button.setEnabled(bool(result.sample_records))
+            # 只有有效片段被整理成样本记录后，才允许进入数据集管理继续流程。
             if result.sample_records:
                 self.sample_records_generated.emit(result.sample_records)
                 self.config_status_label.setText(
@@ -654,7 +660,7 @@ class PreprocessPage(QWidget):
             self.goto_dataset_button.setEnabled(False)
 
     def _on_run_failed(self, message: str) -> None:
-        """Render one worker-side failure."""
+        """渲染一次后台任务失败结果。"""
 
         self._set_running_state(False)
         self.run_state_value.setText("失败")
@@ -666,13 +672,13 @@ class PreprocessPage(QWidget):
         self.goto_dataset_button.setEnabled(False)
 
     def _clear_run_worker(self) -> None:
-        """Reset worker references after the thread exits."""
+        """在线程退出后清理 worker 引用。"""
 
         self._run_thread = None
         self._run_worker = None
 
     def _render_segment_table(self, segments: list[dict[str, object]]) -> None:
-        """Render normalized segment rows into the result table."""
+        """把标准化后的片段结果渲染到结果表。"""
 
         self.segment_table.setRowCount(len(segments))
         for row_index, segment in enumerate(segments):
@@ -692,7 +698,7 @@ class PreprocessPage(QWidget):
                 self._set_table_value(self.segment_table, row_index, column, value)
 
     def _set_running_state(self, running: bool) -> None:
-        """Enable or disable controls based on the current worker state."""
+        """根据后台任务状态统一启用或禁用控件。"""
 
         self.probe_button.setEnabled(not running)
         self.start_button.setEnabled(not running and self._selected_record() is not None and bool(self._selected_record()["exists"]))
@@ -714,12 +720,12 @@ class PreprocessPage(QWidget):
             self.process_progress.setValue(100 if self.current_run_result and self.current_run_result.success else 0)
 
     def _is_running(self) -> bool:
-        """Return whether a preprocess task is currently active."""
+        """返回当前是否存在正在执行的预处理任务。"""
 
         return self._run_thread is not None
 
     def _reset_preview(self, message: str, badge_level: str = "info") -> None:
-        """Reset the preview card to a safe placeholder state."""
+        """把预览区重置到安全占位状态。"""
 
         label = "待读取" if badge_level == "info" else "读取失败"
         self.current_probe_result = None
@@ -740,7 +746,7 @@ class PreprocessPage(QWidget):
         self.preview_iq_table.setRowCount(0)
 
     def _set_table_value(self, table: QTableWidget, row: int, column: int, value: str) -> None:
-        """Set one table cell value, creating the item if needed."""
+        """设置表格单元格文本，不存在时自动创建 item。"""
 
         item = table.item(row, column)
         if item is None:
@@ -749,12 +755,12 @@ class PreprocessPage(QWidget):
         item.setText(value)
 
     def _default_output_dir_for(self, path: Path) -> Path:
-        """Return the default output directory for one CAP file."""
+        """返回某个 CAP 文件默认对应的输出目录。"""
 
         return default_preprocess_output_dir() / path.stem
 
     def _format_bytes(self, size: int) -> str:
-        """Format one file size for compact preview output."""
+        """把文件大小格式化为紧凑可读文本。"""
 
         units = ["B", "KB", "MB", "GB"]
         current_size = float(size)

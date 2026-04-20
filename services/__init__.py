@@ -1,4 +1,4 @@
-"""Service-layer helpers for the desktop application."""
+"""桌面端应用的服务层导出。"""
 
 from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
 from services.preprocess_adapter import (

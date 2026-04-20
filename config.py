@@ -1,4 +1,4 @@
-"""Application configuration for the RF identification desktop UI."""
+"""桌面端应用配置。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ DEFAULT_DEVICE_PORT: int = 5025
 
 
 def ensure_project_dirs() -> None:
-    """Create the core directory structure used by the desktop project."""
+    """创建项目运行时需要的核心目录结构。"""
 
     project_dirs: list[Path] = [
         DB_DIR,
