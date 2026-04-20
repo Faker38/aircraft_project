@@ -6,7 +6,7 @@
 flowchart LR
     A[信号预处理页 page_preprocess.py] --> B[后台线程 preprocess_run_worker.py]
     B --> C[预处理适配层 preprocess_adapter.py]
-    C --> D[外部算法脚本 预处理对接/reprocess_classify_model1_0420.py]
+    C --> D[仓库内预处理脚本 preprocess_integration/reprocess_classify_model1_0420.py]
     D --> E[输出样本文件 .npy]
     D --> F[JSON 结果 success / segments / logs]
     C --> G[统一样本记录 SampleRecord]
@@ -50,7 +50,7 @@ flowchart LR
 - 校验返回 JSON 结构
 - 把结果转换成项目内部统一的 `SampleRecord`
 
-### 外部算法脚本
+### 仓库内预处理脚本
 
 负责：
 

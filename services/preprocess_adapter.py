@@ -1,4 +1,4 @@
-"""预处理适配层：负责把 Qt 页面和外部算法脚本桥接起来。"""
+"""预处理适配层：负责把 Qt 页面和仓库内预处理脚本桥接起来。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,9 @@ from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
 from services.workflow_records import SampleRecord
 
 
-PREPROCESS_DIR = BASE_DIR.parent / "预处理对接"
-PREPROCESS_SCRIPT_PATH = PREPROCESS_DIR / "reprocess_classify_model1_0420.py"
+INTERNAL_PREPROCESS_DIR = BASE_DIR / "preprocess_integration"
+LEGACY_PREPROCESS_DIR = BASE_DIR.parent / "预处理对接"
+PREPROCESS_SCRIPT_NAME = "reprocess_classify_model1_0420.py"
 DEFAULT_MODEL_CANDIDATES = (
     "best_model_1_detect_v2.pth",
     "best_model_1_detect_v2 (1).pth",
@@ -66,16 +67,20 @@ def default_preprocess_output_dir() -> Path:
 
 
 def resolve_default_model_weights_path() -> Path:
-    """返回当前可用的外部模型权重路径。"""
+    """返回当前可用的模型权重路径。
 
-    for candidate_name in DEFAULT_MODEL_CANDIDATES:
-        candidate = PREPROCESS_DIR / candidate_name
-        if candidate.exists():
-            return candidate
+    优先查找仓库内目录；如果权重还未迁入仓库，则兼容旧的外部联调目录。
+    """
 
-    available = sorted(PREPROCESS_DIR.glob("*.pth"))
-    if available:
-        return available[0]
+    for preprocess_dir in _candidate_preprocess_dirs():
+        for candidate_name in DEFAULT_MODEL_CANDIDATES:
+            candidate = preprocess_dir / candidate_name
+            if candidate.exists():
+                return candidate
+
+        available = sorted(preprocess_dir.glob("*.pth"))
+        if available:
+            return available[0]
     raise PreprocessAdapterError("未找到可用的预处理模型权重文件。")
 
 
@@ -145,13 +150,15 @@ def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
 
 
 def _load_preprocess_module() -> ModuleType:
-    """从“预处理对接”目录动态加载外部预处理脚本。"""
+    """从预处理目录动态加载算法脚本。
 
-    if not PREPROCESS_SCRIPT_PATH.exists():
-        raise PreprocessAdapterError(f"未找到预处理脚本：{PREPROCESS_SCRIPT_PATH}")
+    当前优先使用仓库内脚本；若尚未完全迁移，兼容旧外部目录。
+    """
+
+    preprocess_script_path = _resolve_preprocess_script_path()
 
     module_name = "external_preprocess_0420"
-    spec = spec_from_file_location(module_name, PREPROCESS_SCRIPT_PATH)
+    spec = spec_from_file_location(module_name, preprocess_script_path)
     if spec is None or spec.loader is None:
         raise PreprocessAdapterError("无法加载预处理脚本模块。")
 
@@ -249,3 +256,23 @@ def _slugify(value: str) -> str:
     slug = re.sub(r"[^0-9A-Za-z_]+", "_", value)
     slug = re.sub(r"_+", "_", slug)
     return slug.strip("_").lower()
+
+
+def _candidate_preprocess_dirs() -> tuple[Path, ...]:
+    """返回可用于查找预处理脚本和权重的目录集合。"""
+
+    return (
+        INTERNAL_PREPROCESS_DIR,
+        LEGACY_PREPROCESS_DIR,
+    )
+
+
+def _resolve_preprocess_script_path() -> Path:
+    """返回当前应加载的预处理脚本路径。"""
+
+    for preprocess_dir in _candidate_preprocess_dirs():
+        candidate = preprocess_dir / PREPROCESS_SCRIPT_NAME
+        if candidate.exists():
+            return candidate
+    searched = "、".join(str(path / PREPROCESS_SCRIPT_NAME) for path in _candidate_preprocess_dirs())
+    raise PreprocessAdapterError(f"未找到预处理脚本：{searched}")
