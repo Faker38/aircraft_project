@@ -8,6 +8,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from config import APP_NAME, APP_VERSION, ensure_project_dirs
+from services import init_database
 from ui.main_window import MainWindow
 from ui.styles import AppStyles
 
@@ -46,6 +47,7 @@ def main() -> int:
 
     configure_console_encoding()
     ensure_project_dirs()
+    init_database()
     print_runtime_diagnostics()
 
     app = QApplication(sys.argv)

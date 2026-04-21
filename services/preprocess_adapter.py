@@ -209,19 +209,16 @@ def _build_sample_records(
     cap_info: CapProbeResult,
     segments: list[dict[str, Any]],
 ) -> list[SampleRecord]:
-    """把有效片段结果转换成统一的样本记录。"""
+    """把已保存的候选片段转换成统一的样本记录。"""
 
     records: list[SampleRecord] = []
     for index, segment in enumerate(segments, start=1):
-        if str(segment.get("status", "")).lower() != "valid":
-            continue
-
         sample_path = Path(str(segment.get("output_file_path", "")))
         if not sample_path.exists():
             continue
 
-        # 这里把算法输出文件重新包装成项目统一 SampleRecord，
-        # 后续数据集管理、训练和识别页都只认这套结构。
+        # 只要算法已经落盘候选段，就进入数据集管理页等待人工标注；
+        # 模型判定结果只作为参考，不再阻止样本进入后续流程。
         sample_count = _sample_count_from_file(sample_path)
         segment_stem = _slugify(sample_path.stem or f"segment_{index:03d}")
         sample_id = f"pp_{_slugify(input_path.stem)}_{segment_stem}"
@@ -242,7 +239,10 @@ def _build_sample_records(
                 device_id=input_path.stem,
                 start_sample=int(segment.get("start_sample", 0)),
                 end_sample=int(segment.get("end_sample", 0)),
-                status="待复核",
+                snr_db=float(segment.get("snr_db", 0.0)),
+                score=float(segment.get("score", 0.0)),
+                include_in_dataset=True,
+                status="待标注",
                 source_name="预处理输出",
             )
         )

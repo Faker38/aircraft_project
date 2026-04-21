@@ -309,16 +309,25 @@ def run_inference_api(
                 bandwidth = f_max - f_min
                 t_start, t_end = x * dt, (x + width) * dt
 
-                # 先过规则筛选，再把候选送进模型，避免对明显噪声做无效推理。
-                if (bandwidth / 1e6) >= min_bandwidth_mhz and (t_end - t_start) * 1000 >= min_duration_ms:
-                    pure_iq = extract_iq_internal(z_raw, sample_rate_hz, t_start, t_end, f_center, bandwidth)
-                    if pure_iq is None:
-                        continue
+                # 当前工程目标是先把流程打通：候选段只要能切出来并保存，
+                # 就进入数据集管理等待人工标注；模型结果只作为参考状态。
+                safe_bandwidth = max(abs(float(bandwidth)), float(df))
+                try:
+                    pure_iq = extract_iq_internal(z_raw, sample_rate_hz, t_start, t_end, f_center, safe_bandwidth)
+                except Exception as extract_error:
+                    add_log(f"候选段提取失败，已跳过：{extract_error}")
+                    continue
+                if pure_iq is None:
+                    continue
 
-                    chunks = slice_iq_internal(pure_iq, slice_length)
-                    if not chunks:
-                        continue
+                chunks = slice_iq_internal(pure_iq, slice_length)
+                if not chunks:
+                    continue
 
+                rule_passed = (safe_bandwidth / 1e6) >= min_bandwidth_mhz and (t_end - t_start) * 1000 >= min_duration_ms
+                score = 0.0
+                is_drone = False
+                if rule_passed:
                     tensor_list = [normalize_and_tensor(chunk, device) for chunk in chunks]
                     batch_tensor = torch.cat(tensor_list, dim=0)
 
@@ -329,34 +338,34 @@ def run_inference_api(
                     score = float(np.percentile(probs, 80))
                     is_drone = score >= ai_confidence_threshold
 
-                    output_filename = (
-                        f"seg_w{window_index + 1:02d}_{segment_id_counter:03d}_{datetime.now().strftime('%M%S')}.npy"
-                    )
-                    output_filepath = os.path.join(sample_output_dir, output_filename)
-                    np.save(output_filepath, pure_iq)
+                output_filename = (
+                    f"seg_w{window_index + 1:02d}_{segment_id_counter:03d}_{datetime.now().strftime('%M%S')}.npy"
+                )
+                output_filepath = os.path.join(sample_output_dir, output_filename)
+                np.save(output_filepath, pure_iq)
 
-                    segment_absolute_center_hz = center_frequency_hz + f_center
-                    segment_start_sample = start_complex_index + int(t_start * sample_rate_hz)
-                    segment_end_sample = start_complex_index + int(t_end * sample_rate_hz)
+                segment_absolute_center_hz = center_frequency_hz + f_center
+                segment_start_sample = start_complex_index + int(t_start * sample_rate_hz)
+                segment_end_sample = start_complex_index + int(t_end * sample_rate_hz)
 
-                    segment_result = {
-                        "segment_id": f"SEG_{segment_id_counter:03d}",
-                        "start_sample": segment_start_sample,
-                        "end_sample": segment_end_sample,
-                        "duration_ms": round(float((t_end - t_start) * 1000), 2),
-                        "center_freq_hz": float(segment_absolute_center_hz),
-                        "bandwidth_hz": float(bandwidth),
-                        "snr_db": round(float(np.mean(sxx_roi[y : y + height, x : x + width]) - absolute_threshold_db), 2),
-                        "score": round(score, 4),
-                        "output_file_path": output_filepath,
-                        "status": "valid" if is_drone else "discarded",
-                    }
+                segment_result = {
+                    "segment_id": f"SEG_{segment_id_counter:03d}",
+                    "start_sample": segment_start_sample,
+                    "end_sample": segment_end_sample,
+                    "duration_ms": round(float((t_end - t_start) * 1000), 2),
+                    "center_freq_hz": float(segment_absolute_center_hz),
+                    "bandwidth_hz": float(safe_bandwidth),
+                    "snr_db": round(float(np.mean(sxx_roi[y : y + height, x : x + width]) - absolute_threshold_db), 2),
+                    "score": round(score, 4),
+                    "output_file_path": output_filepath,
+                    "status": "valid" if is_drone else "discarded",
+                }
 
-                    results["segments"].append(segment_result)
-                    if is_drone:
-                        results["detected_segment_count"] += 1
-                    results["output_sample_count"] += len(chunks)
-                    segment_id_counter += 1
+                results["segments"].append(segment_result)
+                if is_drone:
+                    results["detected_segment_count"] += 1
+                results["output_sample_count"] += 1
+                segment_id_counter += 1
 
             del z_raw
             del window_interleaved

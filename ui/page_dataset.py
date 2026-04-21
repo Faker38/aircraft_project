@@ -8,6 +8,7 @@ from datetime import datetime
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -22,7 +23,15 @@ from PySide6.QtWidgets import (
 )
 
 from config import BASE_DIR
-from services import DatasetVersionRecord, SampleRecord
+from services import (
+    DatasetVersionRecord,
+    SampleRecord,
+    create_dataset_version,
+    init_database,
+    list_dataset_versions,
+    list_samples,
+    upsert_samples,
+)
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -37,17 +46,21 @@ class DatasetPage(QWidget):
     RAW_FILE_COLUMN = 2
     DEVICE_COLUMN = 3
     SAMPLE_COUNT_COLUMN = 4
-    TYPE_COLUMN = 5
-    INDIVIDUAL_COLUMN = 6
-    STATUS_COLUMN = 7
+    SNR_COLUMN = 5
+    SCORE_COLUMN = 6
+    TYPE_COLUMN = 7
+    INDIVIDUAL_COLUMN = 8
+    INCLUDE_COLUMN = 9
+    STATUS_COLUMN = 10
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the dataset page."""
 
         super().__init__(parent)
+        init_database()
         self._mapping_edit_row: int | None = None
-        self.sample_records: list[SampleRecord] = self._build_initial_sample_records()
-        self.dataset_versions: list[DatasetVersionRecord] = self._build_initial_dataset_versions()
+        self.sample_records: list[SampleRecord] = list_samples()
+        self.dataset_versions: list[DatasetVersionRecord] = list_dataset_versions()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -62,8 +75,9 @@ class DatasetPage(QWidget):
         metrics_row.setSpacing(12)
         self.mapping_metric = MetricCard("编号映射", "0", compact=True)
         self.sample_metric = MetricCard("已处理样本", "0", accent_color="#7CB98B", compact=True)
-        self.pending_metric = MetricCard("待复核", "0", accent_color="#C59A63", compact=True)
-        self.version_metric = MetricCard("当前版本", "v003", accent_color="#5EA6D3", compact=True)
+        self.pending_metric = MetricCard("待标注", "0", accent_color="#C59A63", compact=True)
+        current_version = self.dataset_versions[-1].version_id if self.dataset_versions else "未生成"
+        self.version_metric = MetricCard("当前版本", current_version, accent_color="#5EA6D3", compact=True)
         metrics_row.addWidget(self.mapping_metric)
         metrics_row.addWidget(self.sample_metric)
         metrics_row.addWidget(self.pending_metric)
@@ -92,7 +106,8 @@ class DatasetPage(QWidget):
 
         self._refresh_sample_table()
         self._refresh_history_table()
-        self._refresh_dataset_result_table(self.dataset_versions[-1].label_counts)
+        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
+        self._refresh_dataset_result_table(latest_label_counts)
         self._sync_device_filter_options()
         self._refresh_annotation_metrics()
         self._apply_filters()
@@ -111,30 +126,19 @@ class DatasetPage(QWidget):
     def add_preprocess_records(self, records: list[SampleRecord]) -> None:
         """Append or update preprocess-generated sample records."""
 
-        changed = False
-        existing_by_id = {record.sample_id: index for index, record in enumerate(self.sample_records)}
-
-        for record in records:
-            if record.source_type != "local_preprocess":
-                continue
-            existing_index = existing_by_id.get(record.sample_id)
-            if existing_index is None:
-                self.sample_records.append(record)
-                existing_by_id[record.sample_id] = len(self.sample_records) - 1
-            else:
-                self.sample_records[existing_index] = record
-            changed = True
-
-        if not changed:
+        preprocess_records = [record for record in records if record.source_type == "local_preprocess"]
+        if not preprocess_records:
             return
 
+        upsert_samples(preprocess_records)
+        self.sample_records = list_samples()
         self._refresh_sample_table()
         self._sync_device_filter_options()
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
         self.annotation_status_label.setText(
-            f"已同步 {len(records)} 条预处理输出记录，请继续完成标签确认与样本复核。"
+            f"已同步 {len(preprocess_records)} 条预处理候选样本，请继续完成手动标注。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
 
@@ -152,15 +156,15 @@ class DatasetPage(QWidget):
         info_layout.setHorizontalSpacing(12)
         info_layout.setVerticalSpacing(10)
 
-        processed_value = QLabel(str(len(self.sample_records)))
-        processed_value.setObjectName("ValueLabel")
-        ready_value = QLabel(str(sum(1 for record in self.sample_records if record.status == "已标注")))
-        ready_value.setObjectName("ValueLabel")
+        self.processed_value = QLabel(str(len(self.sample_records)))
+        self.processed_value.setObjectName("ValueLabel")
+        self.ready_value = QLabel(str(sum(1 for record in self.sample_records if record.status == "已标注")))
+        self.ready_value.setObjectName("ValueLabel")
         next_step_value = QLabel("标签确认 -> 数据集生成")
         next_step_value.setObjectName("ValueLabel")
 
-        info_layout.addRow("当前样本数", processed_value)
-        info_layout.addRow("已标注样本", ready_value)
+        info_layout.addRow("当前样本数", self.processed_value)
+        info_layout.addRow("已标注样本", self.ready_value)
         info_layout.addRow("当前下一步", next_step_value)
 
         hint_label = QLabel("当前页面不再包含公开数据导入入口，后续统一对接你们自己的预处理输出样本。")
@@ -276,7 +280,7 @@ class DatasetPage(QWidget):
         self.device_filter.currentIndexChanged.connect(self._apply_filters)
 
         self.status_filter = QComboBox()
-        self.status_filter.addItems(["全部状态", "待复核", "已标注"])
+        self.status_filter.addItems(["全部状态", "待标注", "待复核", "已标注"])
         self.status_filter.currentIndexChanged.connect(self._apply_filters)
 
         filter_row.addWidget(QLabel("设备筛选"))
@@ -285,9 +289,21 @@ class DatasetPage(QWidget):
         filter_row.addWidget(self.status_filter)
         filter_row.addStretch(1)
 
-        self.sample_table = QTableWidget(0, 8)
+        self.sample_table = QTableWidget(0, 11)
         self.sample_table.setHorizontalHeaderLabels(
-            ["样本 ID", "来源类型", "来源文件", "设备编号", "样本点数", "类型标签", "个体标签", "状态"]
+            [
+                "样本 ID",
+                "来源类型",
+                "来源文件",
+                "设备编号",
+                "样本点数",
+                "SNR",
+                "模型分数",
+                "类型标签",
+                "个体标签",
+                "纳入",
+                "状态",
+            ]
         )
         self.sample_table.horizontalHeader().setStretchLastSection(True)
         self.sample_table.verticalHeader().setVisible(False)
@@ -316,7 +332,9 @@ class DatasetPage(QWidget):
         self.review_type_input = QLineEdit()
         self.review_individual_input = QLineEdit()
         self.review_status_box = QComboBox()
-        self.review_status_box.addItems(["待复核", "已标注"])
+        self.review_status_box.addItems(["待标注", "待复核", "已标注"])
+        self.review_include_checkbox = QCheckBox("纳入数据集")
+        self.review_include_checkbox.setChecked(True)
         self.review_type_input.setPlaceholderText("输入类型标签")
         self.review_individual_input.setPlaceholderText("输入个体标签")
 
@@ -324,6 +342,7 @@ class DatasetPage(QWidget):
         review_layout.addRow("设备编号", self.review_device_value)
         review_layout.addRow("类型标签", self.review_type_input)
         review_layout.addRow("个体标签", self.review_individual_input)
+        review_layout.addRow("是否纳入", self.review_include_checkbox)
         review_layout.addRow("状态", self.review_status_box)
 
         action_row = QHBoxLayout()
@@ -564,8 +583,11 @@ class DatasetPage(QWidget):
                 record.raw_file_name,
                 record.device_id,
                 str(record.sample_count),
+                f"{record.snr_db:.2f}",
+                f"{record.score:.4f}",
                 record.label_type,
                 record.label_individual,
+                "是" if record.include_in_dataset else "否",
                 record.status,
             ]
             for column, value in enumerate(values):
@@ -716,7 +738,7 @@ class DatasetPage(QWidget):
             if mapping is None:
                 self._set_table_value(self.sample_table, row, self.TYPE_COLUMN, "")
                 self._set_table_value(self.sample_table, row, self.INDIVIDUAL_COLUMN, "")
-                self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待复核")
+                self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待标注")
                 pending_rows += 1
                 self._sync_sample_record_from_row(row)
                 continue
@@ -763,7 +785,8 @@ class DatasetPage(QWidget):
             self.review_device_value.setText("-")
             self.review_type_input.clear()
             self.review_individual_input.clear()
-            self.review_status_box.setCurrentText("待复核")
+            self.review_include_checkbox.setChecked(True)
+            self.review_status_box.setCurrentText("待标注")
             self.review_individual_input.setEnabled(self.individual_radio.isChecked())
             return
 
@@ -771,7 +794,8 @@ class DatasetPage(QWidget):
         self.review_device_value.setText(self._item_text(self.sample_table, row, self.DEVICE_COLUMN))
         self.review_type_input.setText(self._item_text(self.sample_table, row, self.TYPE_COLUMN))
         self.review_individual_input.setText(self._item_text(self.sample_table, row, self.INDIVIDUAL_COLUMN))
-        status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待复核"
+        self.review_include_checkbox.setChecked(self._item_text(self.sample_table, row, self.INCLUDE_COLUMN) != "否")
+        status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注"
         self.review_status_box.setCurrentText(status_text)
         self.review_individual_input.setEnabled(self.individual_radio.isChecked())
 
@@ -786,6 +810,7 @@ class DatasetPage(QWidget):
         type_label = self.review_type_input.text().strip()
         individual_label = self.review_individual_input.text().strip()
         review_status = self.review_status_box.currentText().strip()
+        include_in_dataset = self.review_include_checkbox.isChecked()
 
         if review_status == "已标注" and not type_label:
             self.annotation_status_label.setText("状态为已标注时，至少需要填写类型标签。")
@@ -798,6 +823,7 @@ class DatasetPage(QWidget):
         self._set_table_value(self.sample_table, row, self.TYPE_COLUMN, type_label)
         if self.individual_radio.isChecked():
             self._set_table_value(self.sample_table, row, self.INDIVIDUAL_COLUMN, individual_label)
+        self._set_table_value(self.sample_table, row, self.INCLUDE_COLUMN, "是" if include_in_dataset else "否")
         self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, review_status)
 
         self._sync_sample_record_from_row(row)
@@ -823,9 +849,11 @@ class DatasetPage(QWidget):
                 record,
                 label_type=self._item_text(self.sample_table, row, self.TYPE_COLUMN),
                 label_individual=self._item_text(self.sample_table, row, self.INDIVIDUAL_COLUMN),
-                status=self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待复核",
+                include_in_dataset=self._item_text(self.sample_table, row, self.INCLUDE_COLUMN) != "否",
+                status=self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注",
                 device_id=self._item_text(self.sample_table, row, self.DEVICE_COLUMN),
             )
+            upsert_samples([self.sample_records[index]])
             break
 
     def _apply_filters(self) -> None:
@@ -836,7 +864,7 @@ class DatasetPage(QWidget):
 
         for row in range(self.sample_table.rowCount()):
             device_id = self._item_text(self.sample_table, row, self.DEVICE_COLUMN)
-            row_status = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待复核"
+            row_status = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注"
 
             visible = True
             if selected_device not in ("", "全部设备") and device_id != selected_device:
@@ -863,13 +891,22 @@ class DatasetPage(QWidget):
         mapping_count = self.mapping_table.rowCount()
         pending_count = 0
         for row in range(self.sample_table.rowCount()):
-            row_status = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待复核"
+            row_status = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注"
             if row_status != "已标注":
                 pending_count += 1
 
         self.mapping_metric.set_value(str(mapping_count))
         self.sample_metric.set_value(str(self.sample_table.rowCount()))
         self.pending_metric.set_value(str(pending_count))
+        if hasattr(self, "processed_value"):
+            self.processed_value.setText(str(self.sample_table.rowCount()))
+        if hasattr(self, "ready_value"):
+            ready_count = sum(
+                1
+                for row in range(self.sample_table.rowCount())
+                if self._item_text(self.sample_table, row, self.STATUS_COLUMN) == "已标注"
+            )
+            self.ready_value.setText(str(ready_count))
 
     def _sync_device_filter_options(self) -> None:
         """Refresh the device filter from sample rows and mapping rows."""
@@ -902,12 +939,18 @@ class DatasetPage(QWidget):
         task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
 
         label_counts: dict[str, int] = {}
+        selected_sample_ids: list[str] = []
+        label_values: dict[str, str] = {}
         for row in range(self.sample_table.rowCount()):
             status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN)
             label_text = self._item_text(self.sample_table, row, label_column)
-            if status_text != "已标注" or not label_text:
+            include_text = self._item_text(self.sample_table, row, self.INCLUDE_COLUMN)
+            sample_id = self._item_text(self.sample_table, row, self.SAMPLE_ID_COLUMN)
+            if status_text != "已标注" or include_text == "否" or not label_text:
                 continue
             label_counts[label_text] = label_counts.get(label_text, 0) + 1
+            selected_sample_ids.append(sample_id)
+            label_values[sample_id] = label_text
 
         if not label_counts:
             self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
@@ -924,6 +967,8 @@ class DatasetPage(QWidget):
             label_counts=label_counts,
         )
         self.dataset_versions.append(record)
+        create_dataset_version(record, selected_sample_ids, label_values)
+        self.dataset_versions = list_dataset_versions()
         self.version_metric.set_value(version_id)
         self._refresh_dataset_result_table(label_counts)
         self._refresh_history_table()

@@ -23,6 +23,9 @@ class SampleRecord:
     device_id: str
     start_sample: int
     end_sample: int
+    snr_db: float = 0.0
+    score: float = 0.0
+    include_in_dataset: bool = True
     status: str = "已标注"
     source_name: str = ""
 

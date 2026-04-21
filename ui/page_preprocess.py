@@ -31,6 +31,7 @@ from services import (
     default_preprocess_output_dir,
     probe_cap_file,
     resolve_default_model_weights_path,
+    save_preprocess_result,
 )
 from ui.preprocess_run_worker import PreprocessRunWorker
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
@@ -49,6 +50,7 @@ class PreprocessPage(QWidget):
         self.cap_records = self._build_cap_records()
         self.current_probe_result: CapProbeResult | None = None
         self.current_run_result: PreprocessRunResult | None = None
+        self._last_run_config: PreprocessRunConfig | None = None
         self._run_thread: QThread | None = None
         self._run_worker: PreprocessRunWorker | None = None
 
@@ -68,7 +70,7 @@ class PreprocessPage(QWidget):
         self.status_metric = MetricCard("任务状态", "待执行", accent_color="#7CB98B", compact=True)
         self.detected_metric = MetricCard("检出信号段", "0", accent_color="#C59A63", compact=True)
         self.candidate_metric = MetricCard("候选信号段", "0", accent_color="#F2C94C", compact=True)  # 新增控件
-        self.output_metric = MetricCard("输出样本", "0", accent_color="#5EA6D3", compact=True)
+        self.output_metric = MetricCard("已保存样本", "0", accent_color="#5EA6D3", compact=True)
         metrics_row.addWidget(self.file_metric)
         metrics_row.addWidget(self.status_metric)
         metrics_row.addWidget(self.detected_metric)
@@ -408,7 +410,7 @@ class PreprocessPage(QWidget):
 
         summary_form.addRow("任务状态", self.run_state_value)
         summary_form.addRow("检出信号段", self.detected_value)
-        summary_form.addRow("输出样本数", self.output_value)
+        summary_form.addRow("已保存样本", self.output_value)
         summary_form.addRow("输出目录", self.output_dir_value)
 
         self.result_message_label = QLabel("等待预处理任务启动。")
@@ -586,6 +588,7 @@ class PreprocessPage(QWidget):
             model_weights_path=self.model_path_input.text().strip(),
             ai_confidence_threshold=self.confidence_input.value(),
         )
+        self._last_run_config = config
 
         self._set_running_state(True)
         self.current_run_result = None
@@ -633,7 +636,8 @@ class PreprocessPage(QWidget):
             self._apply_probe_result(result.cap_info)
 
         self.detected_metric.set_value(str(result.detected_segment_count))
-        self.output_metric.set_value(str(result.output_sample_count))
+        saved_sample_count = len(result.sample_records)
+        self.output_metric.set_value(str(saved_sample_count))
         # 新增候选段数展示
         if hasattr(result, "candidate_segment_count"):
             if hasattr(self, "candidate_metric"):
@@ -641,10 +645,11 @@ class PreprocessPage(QWidget):
             if hasattr(self, "candidate_value"):
                 self.candidate_value.setText(str(result.candidate_segment_count))
         self.detected_value.setText(str(result.detected_segment_count))
-        self.output_value.setText(str(result.output_sample_count))
+        self.output_value.setText(str(saved_sample_count))
         self.output_dir_value.setText(result.sample_output_dir)
         self.log_output.setPlainText("\n".join(result.logs) if result.logs else "本次任务未返回日志。")
         self._render_segment_table(result.segments)
+        self._save_run_result_to_database(result)
 
         if result.success:
             self.run_state_value.setText("完成")
@@ -657,7 +662,7 @@ class PreprocessPage(QWidget):
             if result.sample_records:
                 self.sample_records_generated.emit(result.sample_records)
                 self.config_status_label.setText(
-                    f"本次已同步 {len(result.sample_records)} 条有效样本记录，可直接进入数据集管理继续后续流程。"
+                    f"本次已同步 {len(result.sample_records)} 条候选样本记录，可直接进入数据集管理进行人工标注。"
                 )
             else:
                 self.config_status_label.setText("本次未生成可同步的有效样本记录，可继续调整阈值后重试。")
@@ -680,6 +685,16 @@ class PreprocessPage(QWidget):
         self.status_metric.set_value("失败")
         self.log_output.setPlainText(message)
         self.goto_dataset_button.setEnabled(False)
+
+    def _save_run_result_to_database(self, result: PreprocessRunResult) -> None:
+        """保存预处理任务、候选样本和原始文件信息到数据库。"""
+
+        if self._last_run_config is None:
+            return
+        try:
+            save_preprocess_result(self._last_run_config, result)
+        except Exception as exc:
+            self.config_status_label.setText(f"预处理已完成，但数据库写入失败：{exc}")
 
     def _clear_run_worker(self) -> None:
         """在线程退出后清理 worker 引用。"""
