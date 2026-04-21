@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -27,6 +28,8 @@ from services import (
     DatasetVersionRecord,
     SampleRecord,
     create_dataset_version,
+    delete_dataset_version,
+    delete_sample,
     init_database,
     list_dataset_versions,
     list_samples,
@@ -280,7 +283,7 @@ class DatasetPage(QWidget):
         self.device_filter.currentIndexChanged.connect(self._apply_filters)
 
         self.status_filter = QComboBox()
-        self.status_filter.addItems(["全部状态", "待标注", "待复核", "已标注"])
+        self.status_filter.addItems(["全部状态", "待标注", "已标注", "已排除"])
         self.status_filter.currentIndexChanged.connect(self._apply_filters)
 
         filter_row.addWidget(QLabel("设备筛选"))
@@ -316,7 +319,7 @@ class DatasetPage(QWidget):
         review_title = QLabel("复核区")
         review_title.setObjectName("SectionTitle")
 
-        review_hint = QLabel("点击样本行后，在这里做少量修正。通常只需要处理未匹配到映射的样本。")
+        review_hint = QLabel("点击样本行后，在这里填写标签或排除样本。只有已标注且纳入数据集的样本会进入版本生成。")
         review_hint.setObjectName("MutedText")
         review_hint.setWordWrap(True)
 
@@ -332,7 +335,8 @@ class DatasetPage(QWidget):
         self.review_type_input = QLineEdit()
         self.review_individual_input = QLineEdit()
         self.review_status_box = QComboBox()
-        self.review_status_box.addItems(["待标注", "待复核", "已标注"])
+        self.review_status_box.addItems(["待标注", "已标注", "已排除"])
+        self.review_status_box.currentTextChanged.connect(self._on_review_status_changed)
         self.review_include_checkbox = QCheckBox("纳入数据集")
         self.review_include_checkbox.setChecked(True)
         self.review_type_input.setPlaceholderText("输入类型标签")
@@ -355,8 +359,12 @@ class DatasetPage(QWidget):
         save_review_button = QPushButton("保存复核结果")
         save_review_button.clicked.connect(self._save_manual_review)
 
+        delete_sample_button = QPushButton("删除选中样本")
+        delete_sample_button.clicked.connect(self._delete_selected_sample)
+
         action_row.addWidget(auto_button)
         action_row.addWidget(save_review_button)
+        action_row.addWidget(delete_sample_button)
         action_row.addStretch(1)
 
         self.annotation_status_label = QLabel("当前模式：类型识别。自动标注仅作用于预处理输出样本。")
@@ -459,8 +467,18 @@ class DatasetPage(QWidget):
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setAlternatingRowColors(True)
+        self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         configure_scrollable(self.history_table)
         section.body_layout.addWidget(self.history_table)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        delete_version_button = QPushButton("删除选中版本")
+        delete_version_button.clicked.connect(self._delete_selected_dataset_version)
+        action_row.addWidget(delete_version_button)
+        action_row.addStretch(1)
+        section.body_layout.addLayout(action_row)
         return section
 
     def _build_initial_sample_records(self) -> list[SampleRecord]:
@@ -750,7 +768,7 @@ class DatasetPage(QWidget):
                     self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "已标注")
                     matched_rows += 1
                 else:
-                    self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待复核")
+                    self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待标注")
                     pending_rows += 1
             else:
                 self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "已标注")
@@ -761,9 +779,89 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self.annotation_status_label.setText(
-            f"自动标注完成：{matched_rows} 条已按映射回填，{pending_rows} 条仍需人工复核。"
+            f"自动标注完成：{matched_rows} 条已按映射回填，{pending_rows} 条仍需人工标注。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
+
+    def _on_review_status_changed(self, status_text: str) -> None:
+        """根据标注状态同步“是否纳入数据集”的可操作性。"""
+
+        is_excluded = status_text == "已排除"
+        self.review_include_checkbox.setEnabled(not is_excluded)
+        if is_excluded:
+            self.review_include_checkbox.setChecked(False)
+
+    def _delete_selected_sample(self) -> None:
+        """从数据库删除当前选中的样本记录，不删除本地样本文件。"""
+
+        row = self.sample_table.currentRow()
+        if row < 0:
+            self.annotation_status_label.setText("请先选择要删除的样本。")
+            return
+
+        sample_id = self._item_text(self.sample_table, row, self.SAMPLE_ID_COLUMN)
+        sample_file = self._record_for_row(row).sample_file_name if self._record_for_row(row) else ""
+        if not sample_id:
+            self.annotation_status_label.setText("当前样本记录无效，无法删除。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除样本",
+            f"确认从数据库删除样本 {sample_id}？\n\n本操作不会删除本地 .npy 文件：{sample_file}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        delete_sample(sample_id)
+        self.sample_records = list_samples()
+        self.dataset_versions = list_dataset_versions()
+        self._refresh_sample_table()
+        self._sync_device_filter_options()
+        self._refresh_annotation_metrics()
+        self._apply_filters()
+        self._sync_review_form_from_selection()
+        self._refresh_history_table()
+        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
+        self._refresh_dataset_result_table(latest_label_counts)
+        self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
+        self.annotation_status_label.setText(f"已删除样本数据库记录：{sample_id}。本地样本文件未删除。")
+        self.sample_records_updated.emit(self.get_sample_records())
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _delete_selected_dataset_version(self) -> None:
+        """从数据库删除当前选中的数据集版本，不影响样本记录。"""
+
+        row = self.history_table.currentRow()
+        if row < 0:
+            self.dataset_build_status_label.setText("请先选择要删除的数据集版本。")
+            return
+
+        version_id = self._item_text(self.history_table, row, 0)
+        if not version_id:
+            self.dataset_build_status_label.setText("当前数据集版本记录无效，无法删除。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除版本",
+            f"确认从数据库删除数据集版本 {version_id}？\n\n本操作不会删除任何样本记录或本地文件。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        delete_dataset_version(version_id)
+        self.dataset_versions = list_dataset_versions()
+        self._refresh_history_table()
+        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
+        self._refresh_dataset_result_table(latest_label_counts)
+        self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
+        self.dataset_build_status_label.setText(f"已删除数据集版本：{version_id}。样本记录未删除。")
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _record_for_row(self, row: int) -> SampleRecord | None:
         """Return the backing sample record for one visible table row."""
@@ -811,6 +909,8 @@ class DatasetPage(QWidget):
         individual_label = self.review_individual_input.text().strip()
         review_status = self.review_status_box.currentText().strip()
         include_in_dataset = self.review_include_checkbox.isChecked()
+        if review_status == "已排除":
+            include_in_dataset = False
 
         if review_status == "已标注" and not type_label:
             self.annotation_status_label.setText("状态为已标注时，至少需要填写类型标签。")
@@ -892,7 +992,7 @@ class DatasetPage(QWidget):
         pending_count = 0
         for row in range(self.sample_table.rowCount()):
             row_status = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注"
-            if row_status != "已标注":
+            if row_status == "待标注":
                 pending_count += 1
 
         self.mapping_metric.set_value(str(mapping_count))

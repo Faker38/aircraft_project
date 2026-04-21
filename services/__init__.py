@@ -3,6 +3,8 @@
 from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
 from services.database import (
     create_dataset_version,
+    delete_dataset_version,
+    delete_sample,
     init_database,
     list_dataset_versions,
     list_samples,
@@ -24,6 +26,8 @@ __all__ = [
     "CapProbeError",
     "CapProbeResult",
     "create_dataset_version",
+    "delete_dataset_version",
+    "delete_sample",
     "init_database",
     "list_dataset_versions",
     "list_samples",

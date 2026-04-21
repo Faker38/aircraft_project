@@ -105,6 +105,7 @@ def init_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id);
             """
         )
+        conn.execute("UPDATE samples SET status = '待标注' WHERE status = '待复核'")
 
 
 def save_preprocess_result(config: Any, result: Any) -> None:
@@ -203,6 +204,26 @@ def update_sample_label(
             """,
             (label_type, label_individual, status, int(include_in_dataset), _now_text(), sample_id),
         )
+
+
+def delete_sample(sample_id: str) -> None:
+    """删除一条样本数据库记录，不删除本地样本文件。"""
+
+    init_database()
+    with _connect() as conn:
+        # 样本可能已经被某些数据集版本引用，必须先清理关联表。
+        conn.execute("DELETE FROM dataset_items WHERE sample_id = ?", (sample_id,))
+        conn.execute("DELETE FROM samples WHERE sample_id = ?", (sample_id,))
+
+
+def delete_dataset_version(version_id: str) -> None:
+    """删除一个数据集版本记录，不影响样本表。"""
+
+    init_database()
+    with _connect() as conn:
+        # 版本删除只移除版本和关联关系，样本本身继续保留。
+        conn.execute("DELETE FROM dataset_items WHERE version_id = ?", (version_id,))
+        conn.execute("DELETE FROM dataset_versions WHERE version_id = ?", (version_id,))
 
 
 def create_dataset_version(record: DatasetVersionRecord, sample_ids: list[str], label_values: dict[str, str]) -> None:
@@ -379,7 +400,7 @@ def _upsert_samples(
                 record.snr_db,
                 record.score,
                 int(record.include_in_dataset),
-                record.status,
+                _normalize_sample_status(record.status),
                 record.source_name,
                 now,
                 now,
@@ -407,7 +428,7 @@ def _sample_from_row(row: sqlite3.Row) -> SampleRecord:
         snr_db=float(row["snr_db"]),
         score=float(row["score"]),
         include_in_dataset=bool(row["include_in_dataset"]),
-        status=row["status"],
+        status=_normalize_sample_status(row["status"]),
         source_name=row["source_name"],
     )
 
@@ -423,3 +444,13 @@ def _now_text() -> str:
     """返回统一格式的本地时间字符串。"""
 
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_sample_status(status: str) -> str:
+    """把历史状态归并到当前三态模型。"""
+
+    if status in {"待标注", "已标注", "已排除"}:
+        return status
+    if status == "待复核":
+        return "待标注"
+    return "待标注"

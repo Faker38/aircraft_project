@@ -26,7 +26,7 @@ class SampleRecord:
     snr_db: float = 0.0
     score: float = 0.0
     include_in_dataset: bool = True
-    status: str = "已标注"
+    status: str = "待标注"
     source_name: str = ""
 
     @property
