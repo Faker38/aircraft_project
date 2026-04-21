@@ -67,10 +67,12 @@ class PreprocessPage(QWidget):
         self.file_metric = MetricCard("CAP 文件", "0", compact=True)
         self.status_metric = MetricCard("任务状态", "待执行", accent_color="#7CB98B", compact=True)
         self.detected_metric = MetricCard("检出信号段", "0", accent_color="#C59A63", compact=True)
+        self.candidate_metric = MetricCard("候选信号段", "0", accent_color="#F2C94C", compact=True)  # 新增控件
         self.output_metric = MetricCard("输出样本", "0", accent_color="#5EA6D3", compact=True)
         metrics_row.addWidget(self.file_metric)
         metrics_row.addWidget(self.status_metric)
         metrics_row.addWidget(self.detected_metric)
+        metrics_row.addWidget(self.candidate_metric)
         metrics_row.addWidget(self.output_metric)
         content_layout.addLayout(metrics_row)
 
@@ -208,10 +210,10 @@ class PreprocessPage(QWidget):
         self.slice_length_input.setValue(4096)
 
         self.threshold_input = QDoubleSpinBox()
-        self.threshold_input.setRange(0.0, 30.0)
+        self.threshold_input.setRange(0.0, 20.0)
         self.threshold_input.setDecimals(1)
         self.threshold_input.setSuffix(" dB")
-        self.threshold_input.setValue(10.0)
+        self.threshold_input.setValue(1.0)
 
         self.noise_floor_input = QDoubleSpinBox()
         self.noise_floor_input.setRange(-120.0, 0.0)
@@ -280,7 +282,9 @@ class PreprocessPage(QWidget):
         button_row.addWidget(self.goto_dataset_button)
         button_row.addStretch(1)
 
-        self.config_status_label = QLabel("当前默认按 0x200 / 512 字节头长试跑，算法与界面保持同一口径。")
+        self.config_status_label = QLabel(
+            "当前默认按 0x200 / 512 字节头长试跑；能量阈值按窗口中位能量做相对抬升，默认 +1.0 dB。"
+        )
         self.config_status_label.setObjectName("MutedText")
         self.config_status_label.setWordWrap(True)
 
@@ -630,6 +634,12 @@ class PreprocessPage(QWidget):
 
         self.detected_metric.set_value(str(result.detected_segment_count))
         self.output_metric.set_value(str(result.output_sample_count))
+        # 新增候选段数展示
+        if hasattr(result, "candidate_segment_count"):
+            if hasattr(self, "candidate_metric"):
+                self.candidate_metric.set_value(str(result.candidate_segment_count))
+            if hasattr(self, "candidate_value"):
+                self.candidate_value.setText(str(result.candidate_segment_count))
         self.detected_value.setText(str(result.detected_segment_count))
         self.output_value.setText(str(result.output_sample_count))
         self.output_dir_value.setText(result.sample_output_dir)

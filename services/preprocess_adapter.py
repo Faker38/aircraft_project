@@ -53,6 +53,7 @@ class PreprocessRunResult:
     message: str
     cap_info: CapProbeResult
     detected_segment_count: int
+    candidate_segment_count: int  # 新增候选段数
     output_sample_count: int
     sample_output_dir: str
     segments: list[dict[str, Any]]
@@ -133,6 +134,7 @@ def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
         "success",
         "message",
         "detected_segment_count",
+        "candidate_segment_count",
         "output_sample_count",
         "segments",
         "logs",
@@ -148,6 +150,7 @@ def run_preprocess(config: PreprocessRunConfig) -> PreprocessRunResult:
         message=str(raw_result.get("message", "")),
         cap_info=cap_info,
         detected_segment_count=int(raw_result.get("detected_segment_count", 0)),
+        candidate_segment_count=int(raw_result.get("candidate_segment_count", 0)),
         output_sample_count=int(raw_result.get("output_sample_count", 0)),
         sample_output_dir=str(output_dir),
         segments=segments,
