@@ -13,7 +13,7 @@ from ui.styles import AppStyles
 
 
 def configure_console_encoding() -> None:
-    """Force UTF-8 console output on Windows when supported."""
+    """在 Windows 控制台支持时强制使用 UTF-8 输出。"""
 
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -22,23 +22,23 @@ def configure_console_encoding() -> None:
 
 
 def print_runtime_diagnostics() -> None:
-    """Print interpreter and key binary-package versions for quick troubleshooting."""
+    """打印关键运行环境信息，便于排查依赖和解释器问题。"""
 
-    print(f"[ENV] python: {sys.executable}")
+    print(f"[环境] python: {sys.executable}")
 
     try:
         import numpy
 
-        print(f"[ENV] numpy: {numpy.__version__}")
+        print(f"[环境] numpy: {numpy.__version__}")
     except Exception as exc:
-        print(f"[ENV] numpy: import failed: {exc}")
+        print(f"[环境] numpy: 导入失败: {exc}")
 
     try:
         import cv2
 
-        print(f"[ENV] cv2: {cv2.__version__}")
+        print(f"[环境] cv2: {cv2.__version__}")
     except Exception as exc:
-        print(f"[ENV] cv2: import failed: {exc}")
+        print(f"[环境] cv2: 导入失败: {exc}")
 
 
 def main() -> int:
