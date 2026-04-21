@@ -14,10 +14,10 @@ import os
 import struct
 from datetime import datetime
 
-import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+from scipy import ndimage
 from scipy.signal import butter, filtfilt, spectrogram
 
 
@@ -124,6 +124,27 @@ def build_complex_iq(raw_interleaved: np.ndarray) -> np.ndarray:
     return z_raw
 
 
+def build_rect_structure(height: int, width: int) -> np.ndarray:
+    """构造与 OpenCV 矩形核等价的布尔结构元素。"""
+
+    return np.ones((max(1, height), max(1, width)), dtype=bool)
+
+
+def estimate_energy_threshold_db(
+    sxx_roi_db: np.ndarray,
+    energy_threshold_db: float,
+    noise_floor_dbm: float,
+    calibration_offset: float,
+) -> tuple[float, float]:
+    """基于当前窗口的频谱分布估计自适应阈值。"""
+
+    baseline_db = float(np.percentile(sxx_roi_db, 50))
+    legacy_threshold_db = (noise_floor_dbm + calibration_offset) + energy_threshold_db
+    adaptive_threshold_db = baseline_db + energy_threshold_db
+    threshold_db = min(legacy_threshold_db, adaptive_threshold_db)
+    return threshold_db, baseline_db
+
+
 def run_inference_api(
     input_file_path: str,
     slice_length: int = 4096,
@@ -147,6 +168,7 @@ def run_inference_api(
         "output_sample_count": 0,
         "segments": [],
         "logs": [],
+        "candidate_segment_count": 0,  # 新增候选段统计
     }
 
     def add_log(message: str) -> None:
@@ -207,8 +229,10 @@ def run_inference_api(
         )
 
         nperseg, noverlap = 1024, 512
-        absolute_threshold_db = (noise_floor_dbm + calibration_offset) + energy_threshold_db
-        add_log(f"能量截断阈值生效: {absolute_threshold_db:.2f} (底噪 {noise_floor_dbm} dBm)")
+        add_log(
+            "能量阈值模式: 当前按窗口中位能量 + 相对阈值自适应估计，"
+            f"同时兼容历史口径 (底噪 {noise_floor_dbm} dBm)。"
+        )
 
         segment_id_counter = 1
         for window_index in range(window_count):
@@ -241,26 +265,44 @@ def run_inference_api(
             f_roi_mask = (f_bins >= -38e6) & (f_bins <= 38e6)
             f_roi = f_bins[f_roi_mask]
             sxx_roi = 10 * np.log10(sxx[f_roi_mask, :] + 1e-12)
+            absolute_threshold_db, baseline_db = estimate_energy_threshold_db(
+                sxx_roi,
+                energy_threshold_db=energy_threshold_db,
+                noise_floor_dbm=noise_floor_dbm,
+                calibration_offset=calibration_offset,
+            )
 
             dt = (nperseg - noverlap) / sample_rate_hz
             df = sample_rate_hz / nperseg
 
-            img_bin = np.where(sxx_roi > absolute_threshold_db, 255, 0).astype(np.uint8)
-
-            kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(1, int(2e6 / df))))
-            img_clean = cv2.morphologyEx(img_bin, cv2.MORPH_OPEN, kernel_open)
-
-            kernel_close = cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (max(1, int(0.2e-3 / dt)), max(1, int(4e6 / df))),
+            add_log(
+                f"窗口 {window_index + 1}/{window_count} 阈值估计 | "
+                f"中位能量: {baseline_db:.2f} dB | 生效阈值: {absolute_threshold_db:.2f} dB"
             )
-            img_clean = cv2.morphologyEx(img_clean, cv2.MORPH_CLOSE, kernel_close)
+            img_bin = sxx_roi > absolute_threshold_db
 
-            contours, _ = cv2.findContours(img_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            add_log(f"窗口 {window_index + 1}/{window_count} 解析完成，发现 {len(contours)} 个能量超限区域。")
+            open_structure = build_rect_structure(height=max(1, int(2e6 / df)), width=1)
+            img_clean = ndimage.binary_opening(img_bin, structure=open_structure)
 
-            for contour in contours:
-                x, y, width, height = cv2.boundingRect(contour)
+            close_structure = build_rect_structure(
+                height=max(1, int(4e6 / df)),
+                width=max(1, int(0.2e-3 / dt)),
+            )
+            img_clean = ndimage.binary_closing(img_clean, structure=close_structure)
+
+            labeled_regions, region_count = ndimage.label(img_clean)
+            region_slices = ndimage.find_objects(labeled_regions)
+            results["candidate_segment_count"] += int(region_count)
+            add_log(f"窗口 {window_index + 1}/{window_count} 解析完成，发现 {region_count} 个能量超限区域。")
+
+            for region_slice in region_slices:
+                if region_slice is None:
+                    continue
+                y_slice, x_slice = region_slice
+                y = y_slice.start or 0
+                x = x_slice.start or 0
+                height = (y_slice.stop or y) - y
+                width = (x_slice.stop or x) - x
                 f_min = f_roi[y]
                 f_max = f_roi[min(y + height - 1, len(f_roi) - 1)]
                 f_center = (f_max + f_min) / 2
@@ -326,7 +368,7 @@ def run_inference_api(
 
         results["success"] = True
         results["message"] = "处理成功"
-        add_log(f"[OK] 任务结束 | 有效无人机信号检出: {results['detected_segment_count']} 个")
+        add_log(f"[OK] 任务结束 | 有效无人机信号检出: {results['detected_segment_count']} 个，候选段总数: {results['candidate_segment_count']} 个")
 
     except Exception as error:
         results["success"] = False
