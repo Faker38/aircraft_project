@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from config import BASE_DIR, SAMPLES_DIR
+from config import BASE_DIR, PREPROCESS_MODEL_PATH, PREPROCESS_MODELS_DIR, SAMPLES_DIR
 from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
 from services.workflow_records import SampleRecord
 
@@ -72,6 +72,9 @@ def resolve_default_model_weights_path() -> Path:
     优先查找仓库内目录；如果权重还未迁入仓库，则兼容旧的外部联调目录。
     """
 
+    if PREPROCESS_MODEL_PATH.exists():
+        return PREPROCESS_MODEL_PATH
+
     for preprocess_dir in _candidate_preprocess_dirs():
         for candidate_name in DEFAULT_MODEL_CANDIDATES:
             candidate = preprocess_dir / candidate_name
@@ -81,6 +84,10 @@ def resolve_default_model_weights_path() -> Path:
         available = sorted(preprocess_dir.glob("*.pth"))
         if available:
             return available[0]
+
+    available_model_weights = sorted(PREPROCESS_MODELS_DIR.glob("*.pth"))
+    if available_model_weights:
+        return available_model_weights[0]
     raise PreprocessAdapterError("未找到可用的预处理模型权重文件。")
 
 

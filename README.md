@@ -19,6 +19,7 @@
 - [CAP 格式验证记录](docs/cap_format_analysis.md)
 - [预处理算法 CAP 对接说明](docs/preprocess_cap_handoff.md)
 - [预处理接入结构图](docs/preprocess_integration_flow.md)
+- [仓库使用说明](docs/repository_usage.md)
 
 ## 运行环境
 

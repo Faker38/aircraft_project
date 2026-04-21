@@ -6,6 +6,8 @@ venv/
 
 data/
 db/
+models/*
+!models/.gitkeep
 
 capture_preview.png
 
