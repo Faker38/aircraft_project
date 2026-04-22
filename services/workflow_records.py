@@ -61,3 +61,30 @@ class DatasetVersionRecord:
     created_at: str
     source_summary: str
     label_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DatasetItemRecord:
+    """数据集版本中一条可训练样本记录。"""
+
+    version_id: str
+    sample_id: str
+    sample_file_path: str
+    label_value: str
+    label_type: str
+    label_individual: str
+    split: str
+    source_file: str
+    sample_count: int
+    file_exists: bool
+
+
+@dataclass(frozen=True)
+class DatasetVersionDetail:
+    """训练页消费的数据集版本详情。"""
+
+    version: DatasetVersionRecord
+    items: list[DatasetItemRecord]
+    manifest_path: str
+    missing_file_count: int
+    empty_label_count: int

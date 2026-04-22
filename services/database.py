@@ -14,8 +14,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterator
 
-from config import DB_DIR
-from services.workflow_records import DatasetVersionRecord, SampleRecord
+from config import DATASETS_DIR, DB_DIR
+from services.workflow_records import DatasetItemRecord, DatasetVersionDetail, DatasetVersionRecord, SampleRecord
 
 
 DB_PATH = DB_DIR / "aircraft_project.sqlite3"
@@ -94,6 +94,7 @@ def init_database() -> None:
                 version_id TEXT NOT NULL,
                 sample_id TEXT NOT NULL,
                 label_value TEXT NOT NULL DEFAULT '',
+                split TEXT NOT NULL DEFAULT 'train',
                 created_at TEXT NOT NULL,
                 PRIMARY KEY(version_id, sample_id),
                 FOREIGN KEY(version_id) REFERENCES dataset_versions(version_id),
@@ -105,6 +106,7 @@ def init_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id);
             """
         )
+        _ensure_column(conn, "dataset_items", "split", "TEXT NOT NULL DEFAULT 'train'")
         conn.execute("UPDATE samples SET status = '待标注' WHERE status = '待复核'")
 
 
@@ -226,10 +228,33 @@ def delete_dataset_version(version_id: str) -> None:
         conn.execute("DELETE FROM dataset_versions WHERE version_id = ?", (version_id,))
 
 
-def create_dataset_version(record: DatasetVersionRecord, sample_ids: list[str], label_values: dict[str, str]) -> None:
+def clear_processed_dataset_records() -> dict[str, int]:
+    """清空预处理后样本、数据集版本和关联记录，不删除本地文件。"""
+
+    init_database()
+    with _connect() as conn:
+        counts = {
+            "dataset_items": int(conn.execute("SELECT COUNT(*) FROM dataset_items").fetchone()[0]),
+            "dataset_versions": int(conn.execute("SELECT COUNT(*) FROM dataset_versions").fetchone()[0]),
+            "samples": int(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]),
+        }
+        # 只清理数据集管理闭环数据，不碰原始文件和预处理任务历史。
+        conn.execute("DELETE FROM dataset_items")
+        conn.execute("DELETE FROM dataset_versions")
+        conn.execute("DELETE FROM samples")
+    return counts
+
+
+def create_dataset_version(
+    record: DatasetVersionRecord,
+    sample_ids: list[str],
+    label_values: dict[str, str],
+    split_values: dict[str, str] | None = None,
+) -> None:
     """保存一个数据集版本及其样本关联。"""
 
     init_database()
+    split_values = split_values or {}
     with _connect() as conn:
         conn.execute(
             """
@@ -252,10 +277,16 @@ def create_dataset_version(record: DatasetVersionRecord, sample_ids: list[str], 
         for sample_id in sample_ids:
             conn.execute(
                 """
-                INSERT INTO dataset_items (version_id, sample_id, label_value, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO dataset_items (version_id, sample_id, label_value, split, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (record.version_id, sample_id, label_values.get(sample_id, ""), _now_text()),
+                (
+                    record.version_id,
+                    sample_id,
+                    label_values.get(sample_id, ""),
+                    split_values.get(sample_id, "train"),
+                    _now_text(),
+                ),
             )
 
 
@@ -291,6 +322,106 @@ def list_dataset_versions() -> list[DatasetVersionRecord]:
             )
         )
     return records
+
+
+def list_dataset_items(version_id: str) -> list[DatasetItemRecord]:
+    """读取一个数据集版本下的真实样本清单。"""
+
+    init_database()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                di.version_id,
+                di.sample_id,
+                di.label_value,
+                di.split,
+                s.sample_file_path,
+                s.label_type,
+                s.label_individual,
+                s.raw_file_path,
+                s.sample_count
+            FROM dataset_items di
+            JOIN samples s ON s.sample_id = di.sample_id
+            WHERE di.version_id = ?
+            ORDER BY di.split, di.sample_id
+            """,
+            (version_id,),
+        ).fetchall()
+
+    items: list[DatasetItemRecord] = []
+    for row in rows:
+        sample_path = Path(row["sample_file_path"])
+        items.append(
+            DatasetItemRecord(
+                version_id=row["version_id"],
+                sample_id=row["sample_id"],
+                sample_file_path=str(sample_path),
+                label_value=row["label_value"],
+                label_type=row["label_type"],
+                label_individual=row["label_individual"],
+                split=row["split"],
+                source_file=Path(row["raw_file_path"]).name,
+                sample_count=int(row["sample_count"]),
+                file_exists=sample_path.exists(),
+            )
+        )
+    return items
+
+
+def get_dataset_version_detail(version_id: str) -> DatasetVersionDetail | None:
+    """读取训练页需要的数据集版本详情。"""
+
+    version = next((record for record in list_dataset_versions() if record.version_id == version_id), None)
+    if version is None:
+        return None
+
+    items = list_dataset_items(version_id)
+    manifest_path = DATASETS_DIR / version_id / "manifest.json"
+    return DatasetVersionDetail(
+        version=version,
+        items=items,
+        manifest_path=str(manifest_path),
+        missing_file_count=sum(1 for item in items if not item.file_exists),
+        empty_label_count=sum(1 for item in items if not item.label_value),
+    )
+
+
+def write_dataset_manifest(version_id: str) -> Path | None:
+    """把数据集版本详情导出为训练入口可读取的 manifest。"""
+
+    detail = get_dataset_version_detail(version_id)
+    if detail is None:
+        return None
+
+    manifest_path = Path(detail.manifest_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version_id": detail.version.version_id,
+        "task_type": detail.version.task_type,
+        "strategy": detail.version.strategy,
+        "sample_count": detail.version.sample_count,
+        "source_summary": detail.version.source_summary,
+        "label_counts": detail.version.label_counts,
+        "missing_file_count": detail.missing_file_count,
+        "empty_label_count": detail.empty_label_count,
+        "items": [
+            {
+                "sample_id": item.sample_id,
+                "sample_file_path": item.sample_file_path,
+                "label_value": item.label_value,
+                "label_type": item.label_type,
+                "label_individual": item.label_individual,
+                "split": item.split,
+                "source_file": item.source_file,
+                "sample_count": item.sample_count,
+                "file_exists": item.file_exists,
+            }
+            for item in detail.items
+        ],
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest_path
 
 
 @contextmanager
@@ -338,6 +469,15 @@ def _upsert_raw_file(
     )
     row = conn.execute("SELECT id FROM raw_files WHERE file_path = ?", (file_path,)).fetchone()
     return int(row["id"])
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_sql: str) -> None:
+    """在轻量原型阶段为旧数据库补齐新增列。"""
+
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    if any(row["name"] == column_name for row in rows):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
 
 def _upsert_samples(

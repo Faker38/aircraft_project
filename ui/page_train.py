@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import EXPORTS_DIR
-from services import DatasetVersionRecord
+from services import DatasetVersionDetail, DatasetVersionRecord, get_dataset_version_detail
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -108,6 +108,7 @@ class TrainPage(QWidget):
         self.task_type_box.currentIndexChanged.connect(self._switch_config_mode)
 
         self.dataset_box = QComboBox()
+        self.dataset_box.currentIndexChanged.connect(self._on_dataset_changed)
 
         switch_row.addWidget(QLabel("任务类型"))
         switch_row.addWidget(self.task_type_box)
@@ -417,21 +418,34 @@ class TrainPage(QWidget):
     def _run_dataset_check(self) -> None:
         """Run one lightweight dataset sanity check."""
 
-        record = self.dataset_box.currentData()
-        if not isinstance(record, DatasetVersionRecord):
+        detail = self._current_dataset_detail()
+        if detail is None:
             self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
             return
 
+        record = detail.version
         binary_type = self._is_binary_type_dataset(record)
         label_summary = " / ".join(self._display_label(label) for label in sorted(record.label_counts))
+        split_counts = self._split_counts(detail)
         lines = [
             f"[Check] 数据集版本：{record.version_id}",
             f"[Check] 任务类型：{record.task_type}",
             f"[Check] 样本数：{record.sample_count}",
             f"[Check] 来源：{record.source_summary}",
+            f"[Check] Manifest：{detail.manifest_path}",
+            f"[Check] 清单样本数：{len(detail.items)}",
+            f"[Check] 划分数量：train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
             f"[Check] 类别 / 个体数量：{len(record.label_counts)}",
             f"[Check] 标签分布：{label_summary}",
         ]
+        if detail.missing_file_count:
+            lines.append(f"[Warn] 有 {detail.missing_file_count} 个样本文件不存在，请先检查样本目录。")
+        else:
+            lines.append("[OK] 样本文件路径检查通过。")
+        if detail.empty_label_count:
+            lines.append(f"[Warn] 有 {detail.empty_label_count} 条样本标签为空，建议回到数据集页修正。")
+        else:
+            lines.append("[OK] 标签完整性检查通过。")
         if len(record.label_counts) == 1:
             lines.append("[Warn] 当前为单类数据集，仅用于链路验证，不适合作为最终模型评估依据。")
         elif binary_type:
@@ -445,10 +459,16 @@ class TrainPage(QWidget):
     def _run_placeholder_training(self) -> None:
         """Run one placeholder training flow from the current dataset version."""
 
-        record = self.dataset_box.currentData()
-        if not isinstance(record, DatasetVersionRecord):
+        detail = self._current_dataset_detail()
+        if detail is None:
             self.training_status_badge.set_status("无数据集", "danger", size="sm")
             self.training_log.setPlainText("未选择有效数据集版本，请先在数据集管理页生成版本。")
+            return
+
+        record = detail.version
+        if not detail.items:
+            self.training_status_badge.set_status("无样本", "danger", size="sm")
+            self.training_log.setPlainText("当前数据集版本没有样本清单，无法继续训练联调。")
             return
 
         label_count = len(record.label_counts)
@@ -482,7 +502,16 @@ class TrainPage(QWidget):
             f"[Info] 任务类型 {task_type}",
             f"[Info] 样本总数 {record.sample_count}",
             f"[Info] 来源 {record.source_summary}",
+            f"[Info] Manifest {detail.manifest_path}",
         ]
+        split_counts = self._split_counts(detail)
+        log_lines.append(
+            f"[Info] 数据划分 train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}"
+        )
+        if detail.missing_file_count:
+            log_lines.append(f"[Warn] {detail.missing_file_count} 个样本文件不存在，本次仅做页面链路验证。")
+        if detail.empty_label_count:
+            log_lines.append(f"[Warn] {detail.empty_label_count} 条样本标签为空，请回到数据集页修正。")
         if is_single_class:
             log_lines.extend(
                 [
@@ -541,6 +570,41 @@ class TrainPage(QWidget):
                     item = QTableWidgetItem()
                     self.detail_table.setItem(row_index, column, item)
                 item.setText(value)
+
+    def _on_dataset_changed(self) -> None:
+        """切换数据集版本后刷新数据检查摘要。"""
+
+        detail = self._current_dataset_detail()
+        if detail is None:
+            return
+        split_counts = self._split_counts(detail)
+        self.training_log.setPlainText(
+            "\n".join(
+                [
+                    f"当前数据集：{detail.version.version_id}",
+                    f"样本清单：{len(detail.items)} 条",
+                    f"数据划分：train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
+                    f"Manifest：{detail.manifest_path}",
+                    "点击“数据检查”可执行完整检查。",
+                ]
+            )
+        )
+
+    def _current_dataset_detail(self) -> DatasetVersionDetail | None:
+        """读取当前下拉框选中版本的数据库详情。"""
+
+        record = self.dataset_box.currentData()
+        if not isinstance(record, DatasetVersionRecord):
+            return None
+        return get_dataset_version_detail(record.version_id)
+
+    def _split_counts(self, detail: DatasetVersionDetail) -> dict[str, int]:
+        """统计一个版本下 train/val/test 的样本数量。"""
+
+        counts: dict[str, int] = {"train": 0, "val": 0, "test": 0}
+        for item in detail.items:
+            counts[item.split] = counts.get(item.split, 0) + 1
+        return counts
 
     def _is_binary_type_dataset(self, record: DatasetVersionRecord) -> bool:
         """Return whether one dataset should be shown as a binary type-recognition run."""

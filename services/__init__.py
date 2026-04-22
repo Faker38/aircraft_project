@@ -2,15 +2,19 @@
 
 from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
 from services.database import (
+    clear_processed_dataset_records,
     create_dataset_version,
     delete_dataset_version,
     delete_sample,
+    get_dataset_version_detail,
     init_database,
+    list_dataset_items,
     list_dataset_versions,
     list_samples,
     save_preprocess_result,
     update_sample_label,
     upsert_samples,
+    write_dataset_manifest,
 )
 from services.preprocess_adapter import (
     PreprocessAdapterError,
@@ -20,15 +24,18 @@ from services.preprocess_adapter import (
     resolve_default_model_weights_path,
     run_preprocess,
 )
-from services.workflow_records import DatasetVersionRecord, SampleRecord
+from services.workflow_records import DatasetItemRecord, DatasetVersionDetail, DatasetVersionRecord, SampleRecord
 
 __all__ = [
     "CapProbeError",
     "CapProbeResult",
+    "clear_processed_dataset_records",
     "create_dataset_version",
     "delete_dataset_version",
     "delete_sample",
+    "get_dataset_version_detail",
     "init_database",
+    "list_dataset_items",
     "list_dataset_versions",
     "list_samples",
     "PreprocessAdapterError",
@@ -41,6 +48,9 @@ __all__ = [
     "save_preprocess_result",
     "update_sample_label",
     "upsert_samples",
+    "write_dataset_manifest",
+    "DatasetItemRecord",
+    "DatasetVersionDetail",
     "DatasetVersionRecord",
     "SampleRecord",
 ]

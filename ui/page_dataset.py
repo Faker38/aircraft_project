@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -27,6 +28,7 @@ from config import BASE_DIR
 from services import (
     DatasetVersionRecord,
     SampleRecord,
+    clear_processed_dataset_records,
     create_dataset_version,
     delete_dataset_version,
     delete_sample,
@@ -34,6 +36,7 @@ from services import (
     list_dataset_versions,
     list_samples,
     upsert_samples,
+    write_dataset_manifest,
 )
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
@@ -102,6 +105,7 @@ class DatasetPage(QWidget):
         content_layout.addLayout(bottom_row)
 
         content_layout.addWidget(self._build_history_card())
+        content_layout.addWidget(self._build_danger_zone_card())
         content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -478,6 +482,32 @@ class DatasetPage(QWidget):
         delete_version_button.clicked.connect(self._delete_selected_dataset_version)
         action_row.addWidget(delete_version_button)
         action_row.addStretch(1)
+        section.body_layout.addLayout(action_row)
+        return section
+
+    def _build_danger_zone_card(self) -> SectionCard:
+        """创建数据库危险操作区。"""
+
+        section = SectionCard(
+            "危险操作",
+            "仅用于联调清理：清空数据库中的样本、数据集版本和关联记录，不删除本地文件。",
+            right_widget=StatusBadge("谨慎使用", "danger", size="sm"),
+            compact=True,
+        )
+
+        warning_label = QLabel("清空后训练页和识别页会失去当前样本/版本入口；本地 .npy、.cap 和 manifest 文件不会被删除。")
+        warning_label.setObjectName("MutedText")
+        warning_label.setWordWrap(True)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        clear_button = QPushButton("清空样本数据库")
+        clear_button.setObjectName("DangerButton")
+        clear_button.clicked.connect(self._clear_processed_dataset_database)
+        action_row.addWidget(clear_button)
+        action_row.addStretch(1)
+
+        section.body_layout.addWidget(warning_label)
         section.body_layout.addLayout(action_row)
         return section
 
@@ -863,6 +893,57 @@ class DatasetPage(QWidget):
         self.dataset_build_status_label.setText(f"已删除数据集版本：{version_id}。样本记录未删除。")
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
+    def _clear_processed_dataset_database(self) -> None:
+        """清空样本和数据集版本数据库记录，保留本地文件。"""
+
+        if not self.sample_records and not self.dataset_versions:
+            self.dataset_build_status_label.setText("当前没有可清空的样本或数据集版本。")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "确认清空样本数据库",
+            "该操作会清空数据库中的样本记录、数据集版本和版本关联。\n\n"
+            "不会删除本地 .npy 样本文件、.cap 原始文件和 manifest 文件。\n\n"
+            "该操作不可撤销，请确认是否继续。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self.dataset_build_status_label.setText("已取消清空操作。")
+            return
+
+        confirm_text, accepted = QInputDialog.getText(
+            self,
+            "二次确认",
+            "请输入“清空”以确认执行：",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not accepted or confirm_text.strip() != "清空":
+            self.dataset_build_status_label.setText("已取消清空操作。")
+            return
+
+        counts = clear_processed_dataset_records()
+        self.sample_records = list_samples()
+        self.dataset_versions = list_dataset_versions()
+        self._refresh_sample_table()
+        self._refresh_history_table()
+        self._refresh_dataset_result_table({})
+        self._sync_device_filter_options()
+        self._refresh_annotation_metrics()
+        self._apply_filters()
+        self._sync_review_form_from_selection()
+        self.version_metric.set_value("未生成")
+        self.annotation_status_label.setText("样本数据库已清空，请重新从预处理结果同步样本。")
+        self.dataset_build_status_label.setText(
+            "已清空："
+            f"样本 {counts.get('samples', 0)} 条，"
+            f"数据集版本 {counts.get('dataset_versions', 0)} 个，"
+            f"版本关联 {counts.get('dataset_items', 0)} 条。"
+        )
+        self.sample_records_updated.emit(self.get_sample_records())
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
     def _record_for_row(self, row: int) -> SampleRecord | None:
         """Return the backing sample record for one visible table row."""
 
@@ -1041,6 +1122,7 @@ class DatasetPage(QWidget):
         label_counts: dict[str, int] = {}
         selected_sample_ids: list[str] = []
         label_values: dict[str, str] = {}
+        sample_labels: list[tuple[str, str]] = []
         for row in range(self.sample_table.rowCount()):
             status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN)
             label_text = self._item_text(self.sample_table, row, label_column)
@@ -1051,6 +1133,7 @@ class DatasetPage(QWidget):
             label_counts[label_text] = label_counts.get(label_text, 0) + 1
             selected_sample_ids.append(sample_id)
             label_values[sample_id] = label_text
+            sample_labels.append((sample_id, label_text))
 
         if not label_counts:
             self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
@@ -1067,7 +1150,9 @@ class DatasetPage(QWidget):
             label_counts=label_counts,
         )
         self.dataset_versions.append(record)
-        create_dataset_version(record, selected_sample_ids, label_values)
+        split_values = self._build_split_values(sample_labels)
+        create_dataset_version(record, selected_sample_ids, label_values, split_values)
+        manifest_path = write_dataset_manifest(version_id)
         self.dataset_versions = list_dataset_versions()
         self.version_metric.set_value(version_id)
         self._refresh_dataset_result_table(label_counts)
@@ -1076,9 +1161,37 @@ class DatasetPage(QWidget):
         if task_type == "类型识别" and len(label_counts) > 1:
             detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别占位训练。"
         self.dataset_build_status_label.setText(
-            f"数据集 {version_id} 已生成：{task_type} | 样本 {record.sample_count} 条 | 来源 预处理样本 | {detail_text}"
+            f"数据集 {version_id} 已生成：{task_type} | 样本 {record.sample_count} 条 | manifest {manifest_path or '未生成'} | {detail_text}"
         )
         self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _build_split_values(self, sample_labels: list[tuple[str, str]]) -> dict[str, str]:
+        """按标签内顺序生成训练、验证、测试划分。"""
+
+        grouped: dict[str, list[str]] = {}
+        for sample_id, label in sample_labels:
+            grouped.setdefault(label, []).append(sample_id)
+
+        split_values: dict[str, str] = {}
+        train_ratio = self.train_ratio.value() / 100
+        val_ratio = self.val_ratio.value() / 100
+        for sample_ids in grouped.values():
+            total = len(sample_ids)
+            train_count = int(round(total * train_ratio))
+            val_count = int(round(total * val_ratio))
+            if total > 0 and train_count == 0:
+                train_count = 1
+            if train_count + val_count > total:
+                val_count = max(total - train_count, 0)
+
+            for index, sample_id in enumerate(sample_ids):
+                if index < train_count:
+                    split_values[sample_id] = "train"
+                elif index < train_count + val_count:
+                    split_values[sample_id] = "val"
+                else:
+                    split_values[sample_id] = "test"
+        return split_values
 
     def _next_generated_version_id(self) -> str:
         """Return the next dataset version ID for generated datasets."""

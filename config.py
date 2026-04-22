@@ -14,6 +14,7 @@ DATA_DIR: Path = BASE_DIR / "data"
 RAW_DATA_DIR: Path = DATA_DIR / "raw"
 SAMPLES_DIR: Path = DATA_DIR / "samples"
 FEATURES_DIR: Path = DATA_DIR / "features"
+DATASETS_DIR: Path = DATA_DIR / "datasets"
 MODELS_DIR: Path = DATA_DIR / "models"
 EXPORTS_DIR: Path = DATA_DIR / "exports"
 RESOURCES_DIR: Path = BASE_DIR / "resources"
@@ -35,6 +36,7 @@ def ensure_project_dirs() -> None:
         RAW_DATA_DIR,
         SAMPLES_DIR,
         FEATURES_DIR,
+        DATASETS_DIR,
         MODELS_DIR,
         EXPORTS_DIR,
         ICONS_DIR,
