@@ -343,6 +343,7 @@ class DatasetPage(QWidget):
         self.review_status_box.currentTextChanged.connect(self._on_review_status_changed)
         self.review_include_checkbox = QCheckBox("纳入数据集")
         self.review_include_checkbox.setChecked(True)
+        self.review_include_checkbox.toggled.connect(self._on_include_toggled)
         self.review_type_input.setPlaceholderText("输入类型标签")
         self.review_individual_input.setPlaceholderText("输入个体标签")
 
@@ -351,6 +352,10 @@ class DatasetPage(QWidget):
         review_layout.addRow("类型标签", self.review_type_input)
         review_layout.addRow("个体标签", self.review_individual_input)
         review_layout.addRow("是否纳入", self.review_include_checkbox)
+        include_hint = QLabel("勾选后立即生效；标签和状态仍通过“保存复核结果”保存。")
+        include_hint.setObjectName("MutedText")
+        include_hint.setWordWrap(True)
+        review_layout.addRow("", include_hint)
         review_layout.addRow("状态", self.review_status_box)
 
         action_row = QHBoxLayout()
@@ -819,7 +824,32 @@ class DatasetPage(QWidget):
         is_excluded = status_text == "已排除"
         self.review_include_checkbox.setEnabled(not is_excluded)
         if is_excluded:
+            self.review_include_checkbox.blockSignals(True)
             self.review_include_checkbox.setChecked(False)
+            self.review_include_checkbox.blockSignals(False)
+            self._persist_include_state(False)
+
+    def _on_include_toggled(self, checked: bool) -> None:
+        """即时保存“是否纳入数据集”状态。"""
+
+        self._persist_include_state(checked)
+
+    def _persist_include_state(self, include_in_dataset: bool) -> None:
+        """把复核区勾选状态立即写回表格、内存记录和数据库。"""
+
+        row = self.sample_table.currentRow()
+        if row < 0:
+            return
+        if self._item_text(self.sample_table, row, self.STATUS_COLUMN) == "已排除":
+            include_in_dataset = False
+
+        self._set_table_value(self.sample_table, row, self.INCLUDE_COLUMN, "是" if include_in_dataset else "否")
+        self._sync_sample_record_from_row(row)
+        self._refresh_annotation_metrics()
+        self.annotation_status_label.setText(
+            f"样本 {self.review_sample_value.text()} 的纳入状态已更新：{'纳入数据集' if include_in_dataset else '不纳入数据集'}。"
+        )
+        self.sample_records_updated.emit(self.get_sample_records())
 
     def _delete_selected_sample(self) -> None:
         """从数据库删除当前选中的样本记录，不删除本地样本文件。"""
@@ -964,7 +994,9 @@ class DatasetPage(QWidget):
             self.review_device_value.setText("-")
             self.review_type_input.clear()
             self.review_individual_input.clear()
+            self.review_include_checkbox.blockSignals(True)
             self.review_include_checkbox.setChecked(True)
+            self.review_include_checkbox.blockSignals(False)
             self.review_status_box.setCurrentText("待标注")
             self.review_individual_input.setEnabled(self.individual_radio.isChecked())
             return
@@ -973,9 +1005,12 @@ class DatasetPage(QWidget):
         self.review_device_value.setText(self._item_text(self.sample_table, row, self.DEVICE_COLUMN))
         self.review_type_input.setText(self._item_text(self.sample_table, row, self.TYPE_COLUMN))
         self.review_individual_input.setText(self._item_text(self.sample_table, row, self.INDIVIDUAL_COLUMN))
+        self.review_include_checkbox.blockSignals(True)
         self.review_include_checkbox.setChecked(self._item_text(self.sample_table, row, self.INCLUDE_COLUMN) != "否")
+        self.review_include_checkbox.blockSignals(False)
         status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN) or "待标注"
         self.review_status_box.setCurrentText(status_text)
+        self.review_include_checkbox.setEnabled(status_text != "已排除")
         self.review_individual_input.setEnabled(self.individual_radio.isChecked())
 
     def _save_manual_review(self) -> None:

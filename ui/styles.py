@@ -62,6 +62,7 @@ class AppStyles:
         t = cls.TOKENS
         up_arrow = (ICON_DIR / "spin_up.svg").as_posix()
         down_arrow = (ICON_DIR / "spin_down.svg").as_posix()
+        check_icon = (ICON_DIR / "check.svg").as_posix()
         return f"""
         * {{
             color: {t.text};
@@ -389,19 +390,23 @@ class AppStyles:
             color: {t.text};
         }}
         QCheckBox::indicator {{
-            width: 16px;
-            height: 16px;
+            width: 17px;
+            height: 17px;
             border-radius: 4px;
-            border: 1px solid rgba(148, 165, 181, 0.42);
-            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(148, 165, 181, 0.62);
+            background: rgba(255, 255, 255, 0.02);
         }}
         QCheckBox::indicator:hover {{
             border: 1px solid rgba(94, 166, 211, 0.50);
-            background: rgba(94, 166, 211, 0.08);
+            background: rgba(94, 166, 211, 0.06);
         }}
         QCheckBox::indicator:checked {{
-            border: 1px solid rgba(94, 166, 211, 0.72);
-            background: rgba(94, 166, 211, 0.24);
+            image: url("{check_icon}");
+            border: 1px solid rgba(94, 166, 211, 0.82);
+            background: rgba(94, 166, 211, 0.38);
+        }}
+        QCheckBox::indicator:unchecked {{
+            image: none;
         }}
         QRadioButton::indicator {{
             width: 16px;
@@ -433,5 +438,9 @@ class AppStyles:
         QRadioButton::indicator:checked:disabled, QCheckBox::indicator:checked:disabled {{
             border: 1px solid rgba(148, 165, 181, 0.28);
             background: rgba(148, 165, 181, 0.14);
+        }}
+        QCheckBox::indicator:unchecked:disabled {{
+            border: 1px solid rgba(148, 165, 181, 0.22);
+            background: rgba(148, 165, 181, 0.06);
         }}
         """
