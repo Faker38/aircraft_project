@@ -159,6 +159,8 @@ class RecognitionPage(QWidget):
         self.mode_controls[mode_key] = {
             "model_selector": model_selector,
             "sample_selector": sample_selector,
+            "run_button": run_button,
+            "load_button": load_button,
             "status_badge": status_badge,
             "result_table": result_table,
         }
@@ -192,6 +194,12 @@ class RecognitionPage(QWidget):
         model_selector.blockSignals(False)
 
         if model_selector.count() == 0:
+            run_button = controls["run_button"]
+            load_button = controls["load_button"]
+            assert isinstance(run_button, QPushButton)
+            assert isinstance(load_button, QPushButton)
+            run_button.setEnabled(False)
+            load_button.setEnabled(False)
             self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
             return
 
@@ -203,6 +211,12 @@ class RecognitionPage(QWidget):
                     target_index = index
                     break
         model_selector.setCurrentIndex(target_index)
+        run_button = controls["run_button"]
+        load_button = controls["load_button"]
+        assert isinstance(run_button, QPushButton)
+        assert isinstance(load_button, QPushButton)
+        run_button.setEnabled(True)
+        load_button.setEnabled(True)
         self._on_model_changed(mode_key)
 
     def _refresh_sample_selector(self, mode_key: str) -> None:
@@ -250,6 +264,12 @@ class RecognitionPage(QWidget):
             return
 
         empty_hint = "请先在数据集页补齐已标注样本" if mode_key == "type" else "个体识别样本暂未准备"
+        run_button = controls["run_button"]
+        load_button = controls["load_button"]
+        assert isinstance(run_button, QPushButton)
+        assert isinstance(load_button, QPushButton)
+        run_button.setEnabled(False)
+        load_button.setEnabled(False)
         self._set_result_rows(mode_key, [["当前无可用样本", empty_hint]], status_text="待识别")
 
     def _records_for_mode(self, mode_key: str) -> list[SampleRecord]:
@@ -304,6 +324,17 @@ class RecognitionPage(QWidget):
             self._set_result_rows(mode_key, [["当前无可用样本", waiting_text]], status_text="待识别")
             return
 
+        run_button = controls["run_button"]
+        load_button = controls["load_button"]
+        assert isinstance(run_button, QPushButton)
+        assert isinstance(load_button, QPushButton)
+        load_button.setEnabled(True)
+        if mode_key == "type":
+            model_record = controls["model_selector"].currentData()
+            run_button.setEnabled(isinstance(model_record, TrainedModelRecord))
+        else:
+            run_button.setEnabled(True)
+
         current_label = record.label_type if mode_key == "type" else record.label_individual
         sample_selector.setToolTip(
             f"样本编号：{record.sample_id}\n来源文件：{record.raw_file_name}\n来源路径：{record.raw_file_path}"
@@ -354,6 +385,9 @@ class RecognitionPage(QWidget):
 
         model_record = model_selector.currentData()
         if not isinstance(model_record, TrainedModelRecord):
+            run_button = controls["run_button"]
+            assert isinstance(run_button, QPushButton)
+            run_button.setEnabled(False)
             self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
             return
 

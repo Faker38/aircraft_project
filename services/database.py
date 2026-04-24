@@ -531,6 +531,14 @@ def get_trained_model(model_id: str) -> TrainedModelRecord | None:
     return _trained_model_from_row(row)
 
 
+def delete_trained_model(model_id: str) -> None:
+    """删除一条模型数据库记录，不删除本地模型文件。"""
+
+    init_database()
+    with _connect() as conn:
+        conn.execute("DELETE FROM trained_models WHERE model_id = ?", (model_id,))
+
+
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
     """创建一次短生命周期 SQLite 连接。"""

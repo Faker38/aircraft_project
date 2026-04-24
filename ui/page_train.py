@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -30,6 +31,7 @@ from services import (
     TrainedModelRecord,
     TrainingMetricRow,
     TrainingRunResult,
+    delete_trained_model,
     get_dataset_version_detail,
     list_trained_models,
 )
@@ -84,6 +86,7 @@ class TrainPage(QWidget):
         root_layout.addWidget(scroll_area)
 
         self._refresh_trained_model_list_from_database()
+        self.delete_model_button.setEnabled(bool(self.trained_models))
 
     def get_trained_models(self) -> list[TrainedModelRecord]:
         """返回当前可供识别页消费的训练模型记录。"""
@@ -322,11 +325,19 @@ class TrainPage(QWidget):
         note_label.setObjectName("MutedText")
         note_label.setWordWrap(True)
 
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self.delete_model_button = QPushButton("删除选中模型")
+        self.delete_model_button.clicked.connect(self._delete_selected_model)
+        action_row.addWidget(self.delete_model_button)
+        action_row.addStretch(1)
+
         export_layout.addRow("导出目录", self.export_path_input)
         export_layout.addRow("产物格式", self.format_box)
 
         section.body_layout.addLayout(info_layout)
         section.body_layout.addLayout(export_layout)
+        section.body_layout.addLayout(action_row)
         section.body_layout.addWidget(note_label)
         return section
 
@@ -579,22 +590,39 @@ class TrainPage(QWidget):
             for value in self.export_detail_labels.values():
                 value.setText("-")
             self.export_result_table.setRowCount(0)
-            self.export_status_badge.set_status("待生成", "info", size="sm")
-            self.export_summary_badge.set_status("待生成", "info", size="sm")
-            self.export_summary_label.setText("尚未生成真实模型文件。")
+            self.export_status_badge.set_status("待模型", "info", size="sm")
+            self.export_summary_badge.set_status("待模型", "info", size="sm")
+            self.export_summary_label.setText("当前没有可用模型记录，请先完成一次真实训练。")
             self.export_metric.set_value("未生成")
+            self.delete_model_button.setEnabled(False)
             return
 
         self.export_detail_labels["任务类型"].setText(record.task_type)
         self.export_detail_labels["算法"].setText(record.model_kind)
         self.export_detail_labels["数据集版本"].setText(record.dataset_version_id)
         self.export_detail_labels["模型路径"].setText(record.artifact_path)
-        self.export_status_badge.set_status(record.status, "success", size="sm")
-        self.export_summary_badge.set_status("已生成", "success", size="sm")
-        self.export_summary_label.setText(
-            f"模型 {record.model_id} 已就绪，可直接用于类型识别页面；当前真实产物为 joblib。"
-        )
+        artifact_path = Path(record.artifact_path)
+        metadata_path = artifact_path.with_name("metadata.json")
+        model_exists = artifact_path.exists()
+        metadata_exists = metadata_path.exists()
+        if model_exists:
+            self.export_status_badge.set_status(record.status, "success", size="sm")
+            self.export_summary_badge.set_status("可识别", "success", size="sm")
+            self.export_summary_label.setText(
+                f"模型 {record.model_id} 已就绪，可直接用于类型识别页面；当前真实产物为 joblib。"
+            )
+        else:
+            self.export_status_badge.set_status("模型缺失", "danger", size="sm")
+            self.export_summary_badge.set_status("模型缺失", "danger", size="sm")
+            self.export_summary_label.setText(
+                f"模型记录 {record.model_id} 仍在数据库中，但模型文件已缺失：{artifact_path}"
+            )
         self._refresh_export_result_table(record)
+        if not model_exists and metadata_exists:
+            self.export_summary_label.setText(
+                f"模型记录 {record.model_id} 存在，但仅检测到 metadata.json，未找到 joblib 产物。"
+            )
+        self.delete_model_button.setEnabled(True)
 
     def _refresh_export_result_table(self, record: TrainedModelRecord) -> None:
         """根据模型目录刷新产物文件清单。"""
@@ -615,6 +643,35 @@ class TrainPage(QWidget):
                     item = QTableWidgetItem()
                     self.export_result_table.setItem(row_index, column, item)
                 item.setText(value)
+
+    def _delete_selected_model(self) -> None:
+        """删除当前选中的模型数据库记录，不删除本地模型文件。"""
+
+        record = self.export_model_box.currentData()
+        if not isinstance(record, TrainedModelRecord):
+            self.export_summary_label.setText("请先选择要删除的模型。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除模型",
+            f"确认从数据库删除模型 {record.model_id}？\n\n"
+            "本操作只会移除 SQLite 中的模型记录，不会删除本地 model.joblib 或 metadata.json 文件。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        delete_trained_model(record.model_id)
+        self._refresh_trained_model_list_from_database()
+        self.export_metric.set_value("未生成" if not self.trained_models else "joblib")
+        if not self.trained_models:
+            self.training_status_badge.set_status("待模型", "info", size="sm")
+            self.training_log.setPlainText("当前没有可用模型记录，请先执行训练生成真实模型。")
+        self.export_summary_label.setText(
+            f"已删除模型记录：{record.model_id}。本地模型文件未删除，可按需手动清理。"
+        )
 
     def _on_dataset_changed(self) -> None:
         """切换数据集版本后刷新摘要信息。"""
