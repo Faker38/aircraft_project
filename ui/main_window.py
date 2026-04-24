@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
         preprocess_page.sample_records_generated.connect(dataset_page.add_preprocess_records)
         dataset_page.dataset_versions_updated.connect(train_page.set_dataset_versions)
         dataset_page.sample_records_updated.connect(recognition_page.set_sample_records)
+        train_page.trained_models_updated.connect(recognition_page.set_trained_models)
 
         self.pages = {
             "overview": overview_page,
@@ -193,6 +194,7 @@ class MainWindow(QMainWindow):
 
         train_page.set_dataset_versions(dataset_page.get_dataset_versions())
         recognition_page.set_sample_records(dataset_page.get_sample_records())
+        recognition_page.set_trained_models(train_page.get_trained_models())
 
         layout.addWidget(self.page_stack, 1)
         return wrapper

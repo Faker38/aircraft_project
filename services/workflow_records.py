@@ -88,3 +88,71 @@ class DatasetVersionDetail:
     manifest_path: str
     missing_file_count: int
     empty_label_count: int
+
+
+@dataclass(frozen=True)
+class TrainedModelRecord:
+    """训练完成后写入数据库的模型记录。"""
+
+    model_id: str
+    dataset_version_id: str
+    task_type: str
+    model_kind: str
+    label_space: list[str] = field(default_factory=list)
+    artifact_path: str = ""
+    metrics: dict[str, object] = field(default_factory=dict)
+    status: str = "训练完成"
+    created_at: str = ""
+
+    @property
+    def accuracy_text(self) -> str:
+        """返回适合界面展示的精度文本。"""
+
+        value = self.metrics.get("test_accuracy")
+        if value is None:
+            return "-"
+        return f"{float(value) * 100:.1f}%"
+
+    @property
+    def macro_f1_text(self) -> str:
+        """返回适合界面展示的宏平均 F1 文本。"""
+
+        value = self.metrics.get("test_macro_f1")
+        if value is None:
+            return "-"
+        return f"{float(value):.3f}"
+
+
+@dataclass(frozen=True)
+class TrainingMetricRow:
+    """训练结果表格中的一行分类指标。"""
+
+    label: str
+    precision: float
+    recall: float
+    f1: float
+    support: int
+
+
+@dataclass(frozen=True)
+class TrainingRunResult:
+    """一次真实训练完成后返回给训练页的统一结果。"""
+
+    model_record: TrainedModelRecord
+    manifest_path: str
+    split_counts: dict[str, int] = field(default_factory=dict)
+    label_counts: dict[str, int] = field(default_factory=dict)
+    logs: list[str] = field(default_factory=list)
+    metric_rows: list[TrainingMetricRow] = field(default_factory=list)
+    confusion_matrix: list[list[int]] = field(default_factory=list)
+    feature_count: int = 0
+
+
+@dataclass(frozen=True)
+class PredictionResult:
+    """识别页展示的一次预测结果。"""
+
+    model_record: TrainedModelRecord
+    predicted_label: str
+    confidence: float
+    probabilities: dict[str, float] = field(default_factory=dict)

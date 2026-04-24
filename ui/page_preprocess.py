@@ -100,31 +100,40 @@ class PreprocessPage(QWidget):
             self._reset_preview("当前未发现可用 CAP 文件。", badge_level="warning")
 
     def _build_cap_records(self) -> list[dict[str, object]]:
-        """从工作区根目录构建当前 CAP 文件列表。"""
+        """从工作区根目录自动扫描全部 CAP 文件。"""
 
         workspace_root = BASE_DIR.parent
         records: list[dict[str, object]] = []
-        candidates = [
-            ("IQ_2025_01_09_13_55_30.cap", "完整样本"),
-            ("head.cap", "头部截取"),
-        ]
-        for file_name, sample_kind in candidates:
-            path = workspace_root / file_name
+        cap_paths = sorted(workspace_root.glob("*.cap"), key=lambda item: (self._sample_kind_priority(item), item.name.lower()))
+        for path in cap_paths:
+            sample_kind = self._sample_kind_for_cap(path)
             records.append(
                 {
-                    "name": file_name,
+                    "name": path.name,
                     "kind": sample_kind,
                     "path": path,
                     "location": "工作区根目录",
-                    "exists": path.exists(),
+                    "exists": True,
                 }
             )
         return records
 
+    def _sample_kind_for_cap(self, path: Path) -> str:
+        """根据文件名和大小给 CAP 样本做一个紧凑类型标记。"""
+
+        if path.name.lower() == "head.cap" or path.stat().st_size <= 2 * 1024 * 1024:
+            return "头部截取"
+        return "完整样本"
+
+    def _sample_kind_priority(self, path: Path) -> int:
+        """返回 CAP 样本类型的排序优先级。"""
+
+        return 1 if self._sample_kind_for_cap(path) == "头部截取" else 0
+
     def _build_file_card(self) -> SectionCard:
         """创建 CAP 文件选择卡片。"""
 
-        section = SectionCard("原始文件", "选择 CAP 文件后，可先执行头信息预览，再发起预处理任务。", compact=True)
+        section = SectionCard("原始文件", "自动扫描工作区根目录下全部 CAP 文件，选择后可先预览头信息，再发起预处理任务。", compact=True)
 
         self.file_table = QTableWidget(0, 5)
         self.file_table.setHorizontalHeaderLabels(["文件名", "样本类型", "文件大小", "存放位置", "状态"])
@@ -165,7 +174,7 @@ class PreprocessPage(QWidget):
         action_row.addWidget(self.file_status_badge)
         action_row.addStretch(1)
 
-        self.file_status_label = QLabel("当前支持先预览 CAP 头字段，再按同一文件发起预处理运行。")
+        self.file_status_label = QLabel("当前会自动扫描工作区根目录下全部 CAP 文件，并支持先预览头字段，再按同一文件发起预处理运行。")
         self.file_status_label.setObjectName("MutedText")
         self.file_status_label.setWordWrap(True)
 

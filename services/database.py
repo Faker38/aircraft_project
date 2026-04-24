@@ -15,7 +15,13 @@ import sqlite3
 from typing import Any, Iterator
 
 from config import DATASETS_DIR, DB_DIR
-from services.workflow_records import DatasetItemRecord, DatasetVersionDetail, DatasetVersionRecord, SampleRecord
+from services.workflow_records import (
+    DatasetItemRecord,
+    DatasetVersionDetail,
+    DatasetVersionRecord,
+    SampleRecord,
+    TrainedModelRecord,
+)
 
 
 DB_PATH = DB_DIR / "aircraft_project.sqlite3"
@@ -101,9 +107,23 @@ def init_database() -> None:
                 FOREIGN KEY(sample_id) REFERENCES samples(sample_id)
             );
 
+            CREATE TABLE IF NOT EXISTS trained_models (
+                model_id TEXT PRIMARY KEY,
+                dataset_version_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                model_kind TEXT NOT NULL,
+                label_space_json TEXT NOT NULL DEFAULT '[]',
+                artifact_path TEXT NOT NULL,
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT '训练完成',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions(version_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_samples_status ON samples(status);
             CREATE INDEX IF NOT EXISTS idx_samples_raw_file ON samples(raw_file_id);
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id);
+            CREATE INDEX IF NOT EXISTS idx_trained_models_dataset_version ON trained_models(dataset_version_id);
             """
         )
         _ensure_column(conn, "dataset_items", "split", "TEXT NOT NULL DEFAULT 'train'")
@@ -224,6 +244,7 @@ def delete_dataset_version(version_id: str) -> None:
     init_database()
     with _connect() as conn:
         # 版本删除只移除版本和关联关系，样本本身继续保留。
+        conn.execute("DELETE FROM trained_models WHERE dataset_version_id = ?", (version_id,))
         conn.execute("DELETE FROM dataset_items WHERE version_id = ?", (version_id,))
         conn.execute("DELETE FROM dataset_versions WHERE version_id = ?", (version_id,))
 
@@ -234,11 +255,13 @@ def clear_processed_dataset_records() -> dict[str, int]:
     init_database()
     with _connect() as conn:
         counts = {
+            "trained_models": int(conn.execute("SELECT COUNT(*) FROM trained_models").fetchone()[0]),
             "dataset_items": int(conn.execute("SELECT COUNT(*) FROM dataset_items").fetchone()[0]),
             "dataset_versions": int(conn.execute("SELECT COUNT(*) FROM dataset_versions").fetchone()[0]),
             "samples": int(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]),
         }
         # 只清理数据集管理闭环数据，不碰原始文件和预处理任务历史。
+        conn.execute("DELETE FROM trained_models")
         conn.execute("DELETE FROM dataset_items")
         conn.execute("DELETE FROM dataset_versions")
         conn.execute("DELETE FROM samples")
@@ -424,6 +447,71 @@ def write_dataset_manifest(version_id: str) -> Path | None:
     return manifest_path
 
 
+def save_trained_model(record: TrainedModelRecord) -> None:
+    """写入或更新一条训练模型记录。"""
+
+    init_database()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO trained_models (
+                model_id, dataset_version_id, task_type, model_kind, label_space_json,
+                artifact_path, metrics_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.model_id,
+                record.dataset_version_id,
+                record.task_type,
+                record.model_kind,
+                json.dumps(record.label_space, ensure_ascii=False),
+                record.artifact_path,
+                json.dumps(record.metrics, ensure_ascii=False),
+                record.status,
+                record.created_at,
+            ),
+        )
+
+
+def list_trained_models(task_type: str | None = None) -> list[TrainedModelRecord]:
+    """读取全部已登记的训练模型记录。"""
+
+    init_database()
+    query = """
+        SELECT model_id, dataset_version_id, task_type, model_kind, label_space_json,
+               artifact_path, metrics_json, status, created_at
+        FROM trained_models
+    """
+    params: tuple[object, ...] = ()
+    if task_type:
+        query += " WHERE task_type = ?"
+        params = (task_type,)
+    query += " ORDER BY created_at DESC, model_id DESC"
+
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_trained_model_from_row(row) for row in rows]
+
+
+def get_trained_model(model_id: str) -> TrainedModelRecord | None:
+    """按模型编号读取一条训练模型记录。"""
+
+    init_database()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT model_id, dataset_version_id, task_type, model_kind, label_space_json,
+                   artifact_path, metrics_json, status, created_at
+            FROM trained_models
+            WHERE model_id = ?
+            """,
+            (model_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _trained_model_from_row(row)
+
+
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
     """创建一次短生命周期 SQLite 连接。"""
@@ -570,6 +658,31 @@ def _sample_from_row(row: sqlite3.Row) -> SampleRecord:
         include_in_dataset=bool(row["include_in_dataset"]),
         status=_normalize_sample_status(row["status"]),
         source_name=row["source_name"],
+    )
+
+
+def _trained_model_from_row(row: sqlite3.Row) -> TrainedModelRecord:
+    """把数据库行转换为统一的训练模型记录。"""
+
+    try:
+        label_space = json.loads(row["label_space_json"] or "[]")
+    except json.JSONDecodeError:
+        label_space = []
+    try:
+        metrics = json.loads(row["metrics_json"] or "{}")
+    except json.JSONDecodeError:
+        metrics = {}
+
+    return TrainedModelRecord(
+        model_id=row["model_id"],
+        dataset_version_id=row["dataset_version_id"],
+        task_type=row["task_type"],
+        model_kind=row["model_kind"],
+        label_space=[str(value) for value in label_space],
+        artifact_path=row["artifact_path"],
+        metrics=metrics if isinstance(metrics, dict) else {},
+        status=row["status"],
+        created_at=row["created_at"],
     )
 
 

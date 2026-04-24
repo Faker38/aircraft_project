@@ -113,12 +113,11 @@ class DatasetPage(QWidget):
 
         self._refresh_sample_table()
         self._refresh_history_table()
-        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
-        self._refresh_dataset_result_table(latest_label_counts)
         self._sync_device_filter_options()
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
+        self._refresh_dataset_generation_controls()
 
     def get_sample_records(self) -> list[SampleRecord]:
         """Return the current downstream sample records."""
@@ -147,6 +146,7 @@ class DatasetPage(QWidget):
         self.annotation_status_label.setText(
             f"已同步 {len(preprocess_records)} 条预处理候选样本，请继续完成手动标注。"
         )
+        self._refresh_dataset_generation_controls()
         self.sample_records_updated.emit(self.get_sample_records())
 
     def _build_sample_flow_card(self) -> SectionCard:
@@ -174,7 +174,7 @@ class DatasetPage(QWidget):
         info_layout.addRow("已标注样本", self.ready_value)
         info_layout.addRow("当前下一步", next_step_value)
 
-        hint_label = QLabel("当前页面不再包含公开数据导入入口，后续统一对接你们自己的预处理输出样本。")
+        hint_label = QLabel("当前样本统一来自预处理输出，建议按来源批次完成标签确认，再生成类型识别数据集版本。")
         hint_label.setObjectName("MutedText")
         hint_label.setWordWrap(True)
 
@@ -203,9 +203,9 @@ class DatasetPage(QWidget):
         self.mapping_table.itemSelectionChanged.connect(self._sync_mapping_form_from_selection)
 
         mapping_rows = [
-            ["drone_001", "DJI_Mavic3", "mavic3_001", "甲方样机 A"],
-            ["drone_003", "Autel_EVO", "autel_003", "Autel 目标机"],
-            ["drone_007", "FPV_Racing", "fpv_007", "竞速穿越机"],
+            ["batch_001", "类别A", "类别A_001", "第一批演示样本"],
+            ["batch_002", "类别B", "类别B_001", "第二批演示样本"],
+            ["batch_003", "类别C", "类别C_001", "第三批演示样本"],
         ]
         for row_index, row_data in enumerate(mapping_rows):
             for column, value in enumerate(row_data):
@@ -220,9 +220,9 @@ class DatasetPage(QWidget):
         self.mapping_individual_input = QLineEdit()
         self.mapping_note_input = QLineEdit()
 
-        self.mapping_device_input.setPlaceholderText("例如 drone_001")
-        self.mapping_type_input.setPlaceholderText("例如 DJI_Mavic3")
-        self.mapping_individual_input.setPlaceholderText("例如 mavic3_001")
+        self.mapping_device_input.setPlaceholderText("例如 batch_001")
+        self.mapping_type_input.setPlaceholderText("例如 类别A")
+        self.mapping_individual_input.setPlaceholderText("例如 类别A_001")
         self.mapping_note_input.setPlaceholderText("可选备注")
 
         form_layout.addRow("设备编号", self.mapping_device_input)
@@ -248,7 +248,7 @@ class DatasetPage(QWidget):
         button_row.addWidget(delete_button)
         button_row.addStretch(1)
 
-        self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号自动回填标签。")
+        self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号或批次编号自动回填标签。")
         self.mapping_status_label.setObjectName("MutedText")
         self.mapping_status_label.setWordWrap(True)
 
@@ -415,22 +415,27 @@ class DatasetPage(QWidget):
         form_layout.setVerticalSpacing(12)
 
         self.train_ratio = QSpinBox()
-        self.train_ratio.setRange(10, 90)
+        self.train_ratio.setRange(0, 100)
         self.train_ratio.setSuffix(" %")
         self.train_ratio.setValue(70)
+        self.train_ratio.valueChanged.connect(self._refresh_dataset_generation_controls)
 
         self.val_ratio = QSpinBox()
-        self.val_ratio.setRange(5, 45)
+        self.val_ratio.setRange(0, 100)
         self.val_ratio.setSuffix(" %")
         self.val_ratio.setValue(15)
+        self.val_ratio.valueChanged.connect(self._refresh_dataset_generation_controls)
 
         self.test_ratio = QSpinBox()
-        self.test_ratio.setRange(5, 45)
+        self.test_ratio.setRange(0, 100)
         self.test_ratio.setSuffix(" %")
         self.test_ratio.setValue(15)
+        self.test_ratio.valueChanged.connect(self._refresh_dataset_generation_controls)
 
         self.strategy_box = QComboBox()
         self.strategy_box.addItems(["按样本随机分层", "按设备个体隔离"])
+        self.dataset_type_radio.toggled.connect(self._refresh_dataset_generation_controls)
+        self.dataset_individual_radio.toggled.connect(self._refresh_dataset_generation_controls)
 
         form_layout.addRow("训练集", self.train_ratio)
         form_layout.addRow("验证集", self.val_ratio)
@@ -438,13 +443,13 @@ class DatasetPage(QWidget):
         form_layout.addRow("划分策略", self.strategy_box)
 
         action_row = QHBoxLayout()
-        generate_button = QPushButton("生成数据集")
-        generate_button.setObjectName("PrimaryButton")
-        generate_button.clicked.connect(self._generate_dataset_version)
-        action_row.addWidget(generate_button)
+        self.generate_button = QPushButton("生成数据集")
+        self.generate_button.setObjectName("PrimaryButton")
+        self.generate_button.clicked.connect(self._generate_dataset_version)
+        action_row.addWidget(self.generate_button)
         action_row.addStretch(1)
 
-        self.dataset_build_status_label = QLabel("当前仅基于预处理输出样本生成新版本，后续统一接真实样本测试。")
+        self.dataset_build_status_label = QLabel("训练集、验证集、测试集比例总和必须等于 100%，才能生成数据集版本。")
         self.dataset_build_status_label.setObjectName("MutedText")
         self.dataset_build_status_label.setWordWrap(True)
 
@@ -526,13 +531,13 @@ class DatasetPage(QWidget):
                 source_type="local_preprocess",
                 raw_file_path=str(mock_root / "raw" / "20260415_213011.cap"),
                 sample_file_path=str(mock_root / "samples" / "sample_1101.iq"),
-                label_type="DJI_Mavic3",
-                label_individual="mavic3_001",
+                label_type="类别A",
+                label_individual="类别A_001",
                 sample_rate_hz=10_000_000.0,
                 center_frequency_hz=2_440_000_000.0,
                 data_format="complex_float32_iq",
                 sample_count=65536,
-                device_id="drone_001",
+                device_id="batch_001",
                 start_sample=0,
                 end_sample=65535,
                 status="已标注",
@@ -543,13 +548,13 @@ class DatasetPage(QWidget):
                 source_type="local_preprocess",
                 raw_file_path=str(mock_root / "raw" / "20260415_213011.cap"),
                 sample_file_path=str(mock_root / "samples" / "sample_1102.iq"),
-                label_type="DJI_Mavic3",
-                label_individual="mavic3_001",
+                label_type="类别A",
+                label_individual="类别A_001",
                 sample_rate_hz=10_000_000.0,
                 center_frequency_hz=2_440_000_000.0,
                 data_format="complex_float32_iq",
                 sample_count=65536,
-                device_id="drone_001",
+                device_id="batch_001",
                 start_sample=65536,
                 end_sample=131071,
                 status="已标注",
@@ -560,13 +565,13 @@ class DatasetPage(QWidget):
                 source_type="local_preprocess",
                 raw_file_path=str(mock_root / "raw" / "20260416_093205.cap"),
                 sample_file_path=str(mock_root / "samples" / "sample_1103.iq"),
-                label_type="FPV_Racing",
-                label_individual="fpv_007",
+                label_type="类别B",
+                label_individual="类别B_001",
                 sample_rate_hz=10_000_000.0,
                 center_frequency_hz=2_440_000_000.0,
                 data_format="complex_float32_iq",
                 sample_count=65536,
-                device_id="drone_007",
+                device_id="batch_002",
                 start_sample=0,
                 end_sample=65535,
                 status="已标注",
@@ -583,10 +588,10 @@ class DatasetPage(QWidget):
                 center_frequency_hz=2_440_000_000.0,
                 data_format="complex_float32_iq",
                 sample_count=65536,
-                device_id="drone_003",
+                device_id="batch_003",
                 start_sample=0,
                 end_sample=65535,
-                status="待复核",
+                status="待标注",
                 source_name="预处理输出",
             ),
         ]
@@ -602,7 +607,7 @@ class DatasetPage(QWidget):
                 strategy="按样本随机分层",
                 created_at="2026-04-09 18:22",
                 source_summary="预处理样本",
-                label_counts={"DJI_Mavic3": 685, "Autel_EVO": 460, "FPV_Racing": 882},
+                label_counts={"类别A": 685, "类别B": 460, "类别C": 882},
             ),
             DatasetVersionRecord(
                 version_id="v002",
@@ -611,7 +616,7 @@ class DatasetPage(QWidget):
                 strategy="按设备个体隔离",
                 created_at="2026-04-13 20:06",
                 source_summary="预处理样本",
-                label_counts={"mavic3_001": 312, "autel_003": 276, "fpv_007": 392},
+                label_counts={"类别A_001": 312, "类别B_001": 276, "类别C_001": 392},
             ),
             DatasetVersionRecord(
                 version_id="v003",
@@ -620,7 +625,7 @@ class DatasetPage(QWidget):
                 strategy="按样本随机分层",
                 created_at="2026-04-16 16:10",
                 source_summary="预处理样本",
-                label_counts={"DJI_Mavic3": 685, "Autel_EVO": 460, "FPV_Racing": 882},
+                label_counts={"类别A": 685, "类别B": 460, "类别C": 882},
             ),
         ]
 
@@ -813,6 +818,7 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
+        self._refresh_dataset_generation_controls()
         self.annotation_status_label.setText(
             f"自动标注完成：{matched_rows} 条已按映射回填，{pending_rows} 条仍需人工标注。"
         )
@@ -846,6 +852,7 @@ class DatasetPage(QWidget):
         self._set_table_value(self.sample_table, row, self.INCLUDE_COLUMN, "是" if include_in_dataset else "否")
         self._sync_sample_record_from_row(row)
         self._refresh_annotation_metrics()
+        self._refresh_dataset_generation_controls(update_status=False)
         self.annotation_status_label.setText(
             f"样本 {self.review_sample_value.text()} 的纳入状态已更新：{'纳入数据集' if include_in_dataset else '不纳入数据集'}。"
         )
@@ -884,8 +891,7 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self._refresh_history_table()
-        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
-        self._refresh_dataset_result_table(latest_label_counts)
+        self._refresh_dataset_generation_controls(update_status=False)
         self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
         self.annotation_status_label.setText(f"已删除样本数据库记录：{sample_id}。本地样本文件未删除。")
         self.sample_records_updated.emit(self.get_sample_records())
@@ -917,10 +923,9 @@ class DatasetPage(QWidget):
         delete_dataset_version(version_id)
         self.dataset_versions = list_dataset_versions()
         self._refresh_history_table()
-        latest_label_counts = self.dataset_versions[-1].label_counts if self.dataset_versions else {}
-        self._refresh_dataset_result_table(latest_label_counts)
+        self._refresh_dataset_generation_controls(update_status=False)
         self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
-        self.dataset_build_status_label.setText(f"已删除数据集版本：{version_id}。样本记录未删除。")
+        self.dataset_build_status_label.setText(f"已删除数据集版本：{version_id}。关联模型记录已同步移除，样本记录未删除。")
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _clear_processed_dataset_database(self) -> None:
@@ -958,7 +963,7 @@ class DatasetPage(QWidget):
         self.dataset_versions = list_dataset_versions()
         self._refresh_sample_table()
         self._refresh_history_table()
-        self._refresh_dataset_result_table({})
+        self._refresh_dataset_generation_controls(update_status=False)
         self._sync_device_filter_options()
         self._refresh_annotation_metrics()
         self._apply_filters()
@@ -969,7 +974,8 @@ class DatasetPage(QWidget):
             "已清空："
             f"样本 {counts.get('samples', 0)} 条，"
             f"数据集版本 {counts.get('dataset_versions', 0)} 个，"
-            f"版本关联 {counts.get('dataset_items', 0)} 条。"
+            f"版本关联 {counts.get('dataset_items', 0)} 条，"
+            f"模型记录 {counts.get('trained_models', 0)} 条。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
         self.dataset_versions_updated.emit(self.get_dataset_versions())
@@ -1046,6 +1052,7 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
+        self._refresh_dataset_generation_controls(update_status=False)
         self.annotation_status_label.setText(
             f"样本 {self.review_sample_value.text()} 已保存复核结果，当前状态：{review_status}。"
         )
@@ -1151,6 +1158,50 @@ class DatasetPage(QWidget):
     def _generate_dataset_version(self) -> None:
         """Generate one dataset version from the current sample table."""
 
+        total_ratio = self._split_ratio_total()
+        if total_ratio != 100:
+            self.dataset_build_status_label.setText(
+                f"当前划分比例总和为 {total_ratio}%，必须等于 100% 才能生成数据集。"
+            )
+            self._refresh_dataset_generation_controls(update_status=False)
+            return
+
+        task_type, label_counts, selected_sample_ids, label_values, sample_labels = self._collect_dataset_candidates()
+
+        if not label_counts:
+            self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
+            return
+
+        version_id = self._next_generated_version_id()
+        record = DatasetVersionRecord(
+            version_id=version_id,
+            task_type=task_type,
+            sample_count=sum(label_counts.values()),
+            strategy=self.strategy_box.currentText(),
+            created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            source_summary="预处理样本",
+            label_counts=label_counts,
+        )
+        split_values = self._build_split_values(sample_labels)
+        create_dataset_version(record, selected_sample_ids, label_values, split_values)
+        manifest_path = write_dataset_manifest(version_id)
+        self.dataset_versions = list_dataset_versions()
+        self.version_metric.set_value(version_id)
+        self._refresh_dataset_result_table(label_counts)
+        self._refresh_history_table()
+        detail_text = f"当前标签数 {len(label_counts)}。"
+        if task_type == "类型识别" and len(label_counts) > 1:
+            detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别真实训练。"
+        self.dataset_build_status_label.setText(
+            f"数据集 {version_id} 已生成：{task_type} | 样本 {record.sample_count} 条 | manifest {manifest_path or '未生成'} | {detail_text}"
+        )
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _collect_dataset_candidates(
+        self,
+    ) -> tuple[str, dict[str, int], list[str], dict[str, str], list[tuple[str, str]]]:
+        """Collect the current dataset candidates from the sample table."""
+
         label_column = self.TYPE_COLUMN if self.dataset_type_radio.isChecked() else self.INDIVIDUAL_COLUMN
         task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
 
@@ -1170,35 +1221,38 @@ class DatasetPage(QWidget):
             label_values[sample_id] = label_text
             sample_labels.append((sample_id, label_text))
 
-        if not label_counts:
-            self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
+        return task_type, label_counts, selected_sample_ids, label_values, sample_labels
+
+    def _split_ratio_total(self) -> int:
+        """Return the current train/val/test ratio total."""
+
+        return self.train_ratio.value() + self.val_ratio.value() + self.test_ratio.value()
+
+    def _refresh_dataset_generation_controls(self, update_status: bool = True) -> None:
+        """Refresh split preview, generation button state, and readiness hint."""
+
+        total_ratio = self._split_ratio_total()
+        is_valid = total_ratio == 100
+        self.generate_button.setEnabled(is_valid)
+
+        task_type, label_counts, selected_sample_ids, _, _ = self._collect_dataset_candidates()
+        if not is_valid:
+            self.result_table.setRowCount(0)
+            if update_status:
+                self.dataset_build_status_label.setText(
+                    f"当前划分比例总和为 {total_ratio}%，必须等于 100% 才能生成数据集。"
+                )
             return
 
-        version_id = self._next_generated_version_id()
-        record = DatasetVersionRecord(
-            version_id=version_id,
-            task_type=task_type,
-            sample_count=sum(label_counts.values()),
-            strategy=self.strategy_box.currentText(),
-            created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            source_summary="预处理样本",
-            label_counts=label_counts,
-        )
-        self.dataset_versions.append(record)
-        split_values = self._build_split_values(sample_labels)
-        create_dataset_version(record, selected_sample_ids, label_values, split_values)
-        manifest_path = write_dataset_manifest(version_id)
-        self.dataset_versions = list_dataset_versions()
-        self.version_metric.set_value(version_id)
         self._refresh_dataset_result_table(label_counts)
-        self._refresh_history_table()
-        detail_text = f"当前标签数 {len(label_counts)}。"
-        if task_type == "类型识别" and len(label_counts) > 1:
-            detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别占位训练。"
+        if not update_status:
+            return
+        if not label_counts:
+            self.dataset_build_status_label.setText("当前划分比例已满足 100%，但还没有可用的已标注样本。")
+            return
         self.dataset_build_status_label.setText(
-            f"数据集 {version_id} 已生成：{task_type} | 样本 {record.sample_count} 条 | manifest {manifest_path or '未生成'} | {detail_text}"
+            f"当前划分比例已满足 100%，可生成{task_type}数据集：共 {len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
         )
-        self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _build_split_values(self, sample_labels: list[tuple[str, str]]) -> dict[str, str]:
         """按标签内顺序生成训练、验证、测试划分。"""
@@ -1208,25 +1262,43 @@ class DatasetPage(QWidget):
             grouped.setdefault(label, []).append(sample_id)
 
         split_values: dict[str, str] = {}
-        train_ratio = self.train_ratio.value() / 100
-        val_ratio = self.val_ratio.value() / 100
         for sample_ids in grouped.values():
-            total = len(sample_ids)
-            train_count = int(round(total * train_ratio))
-            val_count = int(round(total * val_ratio))
-            if total > 0 and train_count == 0:
-                train_count = 1
-            if train_count + val_count > total:
-                val_count = max(total - train_count, 0)
+            train_count, val_count, test_count = self._calculate_split_counts(len(sample_ids))
 
             for index, sample_id in enumerate(sample_ids):
                 if index < train_count:
                     split_values[sample_id] = "train"
                 elif index < train_count + val_count:
                     split_values[sample_id] = "val"
-                else:
+                elif index < train_count + val_count + test_count:
                     split_values[sample_id] = "test"
         return split_values
+
+    def _calculate_split_counts(self, total: int) -> tuple[int, int, int]:
+        """Convert split percentages to concrete train/val/test counts."""
+
+        if total <= 0:
+            return 0, 0, 0
+
+        ratios = [
+            self.train_ratio.value() / 100,
+            self.val_ratio.value() / 100,
+            self.test_ratio.value() / 100,
+        ]
+        counts = [int(round(total * ratio)) for ratio in ratios]
+        diff = total - sum(counts)
+        adjust_order = [2, 1, 0]
+        adjust_index = 0
+        while diff != 0:
+            target_index = adjust_order[adjust_index % len(adjust_order)]
+            if diff > 0:
+                counts[target_index] += 1
+                diff -= 1
+            elif counts[target_index] > 0:
+                counts[target_index] -= 1
+                diff += 1
+            adjust_index += 1
+        return counts[0], counts[1], counts[2]
 
     def _next_generated_version_id(self) -> str:
         """Return the next dataset version ID for generated datasets."""
@@ -1244,13 +1316,8 @@ class DatasetPage(QWidget):
 
         rows = sorted(label_counts.items(), key=lambda item: item[0])
         self.result_table.setRowCount(len(rows))
-
-        train_ratio = self.train_ratio.value() / 100
-        val_ratio = self.val_ratio.value() / 100
         for row_index, (label, count) in enumerate(rows):
-            train_count = int(round(count * train_ratio))
-            val_count = int(round(count * val_ratio))
-            test_count = max(count - train_count - val_count, 0)
+            train_count, val_count, test_count = self._calculate_split_counts(count)
             values = [label, str(train_count), str(val_count), str(test_count)]
             for column, value in enumerate(values):
                 self._set_table_value(self.result_table, row_index, column, value)
