@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
@@ -30,16 +29,15 @@ from services import (
     DatasetVersionRecord,
     SampleRecord,
     clear_processed_dataset_records,
-    create_dataset_version,
     delete_dataset_version,
     delete_sample,
     init_database,
     list_dataset_versions,
     list_samples,
     upsert_samples,
-    write_dataset_manifest,
 )
 from ui.auto_label_worker import AutoLabelWorker
+from ui.dataset_build_worker import DatasetBuildWorker, calculate_split_counts, collect_dataset_candidates
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -69,6 +67,8 @@ class DatasetPage(QWidget):
         self._mapping_edit_row: int | None = None
         self._auto_label_thread: QThread | None = None
         self._auto_label_worker: AutoLabelWorker | None = None
+        self._dataset_build_thread: QThread | None = None
+        self._dataset_build_worker: DatasetBuildWorker | None = None
         self.sample_records: list[SampleRecord] = list_samples()
         self.dataset_versions: list[DatasetVersionRecord] = list_dataset_versions()
 
@@ -459,6 +459,11 @@ class DatasetPage(QWidget):
         action_row.addWidget(self.generate_button)
         action_row.addStretch(1)
 
+        self.dataset_build_progress = QProgressBar()
+        self.dataset_build_progress.setRange(0, 100)
+        self.dataset_build_progress.setValue(0)
+        self.dataset_build_progress.setFormat("等待生成数据集")
+
         self.dataset_build_status_label = QLabel("训练集、验证集、测试集比例总和必须等于 100%，才能生成数据集版本。")
         self.dataset_build_status_label.setObjectName("MutedText")
         self.dataset_build_status_label.setWordWrap(True)
@@ -466,6 +471,7 @@ class DatasetPage(QWidget):
         section.body_layout.addLayout(mode_row)
         section.body_layout.addLayout(form_layout)
         section.body_layout.addLayout(action_row)
+        section.body_layout.addWidget(self.dataset_build_progress)
         section.body_layout.addWidget(self.dataset_build_status_label)
         return section
 
@@ -1253,7 +1259,10 @@ class DatasetPage(QWidget):
         self.device_filter.blockSignals(False)
 
     def _generate_dataset_version(self) -> None:
-        """Generate one dataset version from the current sample table."""
+        """在后台线程中生成一个数据集版本。"""
+
+        if self._is_dataset_building():
+            return
 
         total_ratio = self._split_ratio_total()
         if total_ratio != 100:
@@ -1263,62 +1272,47 @@ class DatasetPage(QWidget):
             self._refresh_dataset_generation_controls(update_status=False)
             return
 
-        task_type, label_counts, selected_sample_ids, label_values, sample_labels = self._collect_dataset_candidates()
+        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
+        label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
 
         if not label_counts:
             self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
             return
 
         version_id = self._next_generated_version_id()
-        record = DatasetVersionRecord(
+        thread = QThread(self)
+        worker = DatasetBuildWorker(
+            sample_records=self.sample_records,
             version_id=version_id,
             task_type=task_type,
-            sample_count=sum(label_counts.values()),
             strategy=self.strategy_box.currentText(),
-            created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            source_summary="预处理样本",
-            label_counts=label_counts,
+            train_ratio=self.train_ratio.value(),
+            val_ratio=self.val_ratio.value(),
+            test_ratio=self.test_ratio.value(),
         )
-        split_values = self._build_split_values(sample_labels)
-        create_dataset_version(record, selected_sample_ids, label_values, split_values)
-        manifest_path = write_dataset_manifest(version_id)
-        self.dataset_versions = list_dataset_versions()
-        self.version_metric.set_value(version_id)
-        self._refresh_dataset_result_table(label_counts)
-        self._refresh_history_table()
-        detail_text = f"当前标签数 {len(label_counts)}。"
-        if task_type == "类型识别" and len(label_counts) > 1:
-            detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别真实训练。"
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress_changed.connect(self._on_dataset_build_progress)
+        worker.finished.connect(self._on_dataset_build_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(self._on_dataset_build_failed)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_dataset_build_worker)
+        thread.finished.connect(thread.deleteLater)
+
+        self._dataset_build_thread = thread
+        self._dataset_build_worker = worker
+        self._set_dataset_building_state(True)
+        self.dataset_build_progress.setRange(0, max(len(selected_sample_ids), 1))
+        self.dataset_build_progress.setValue(0)
+        self.dataset_build_progress.setFormat("生成数据集 %v / %m")
         self.dataset_build_status_label.setText(
-            f"数据集 {version_id} 已生成：{task_type} | 样本 {record.sample_count} 条 | manifest {manifest_path or '未生成'} | {detail_text}"
+            f"正在生成数据集 {version_id}：共 {len(selected_sample_ids)} 条样本，请稍候。"
         )
-        self.dataset_versions_updated.emit(self.get_dataset_versions())
-
-    def _collect_dataset_candidates(
-        self,
-    ) -> tuple[str, dict[str, int], list[str], dict[str, str], list[tuple[str, str]]]:
-        """Collect the current dataset candidates from the sample table."""
-
-        label_column = self.TYPE_COLUMN if self.dataset_type_radio.isChecked() else self.INDIVIDUAL_COLUMN
-        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
-
-        label_counts: dict[str, int] = {}
-        selected_sample_ids: list[str] = []
-        label_values: dict[str, str] = {}
-        sample_labels: list[tuple[str, str]] = []
-        for row in range(self.sample_table.rowCount()):
-            status_text = self._item_text(self.sample_table, row, self.STATUS_COLUMN)
-            label_text = self._item_text(self.sample_table, row, label_column)
-            include_text = self._item_text(self.sample_table, row, self.INCLUDE_COLUMN)
-            sample_id = self._item_text(self.sample_table, row, self.SAMPLE_ID_COLUMN)
-            if status_text != "已标注" or include_text == "否" or not label_text:
-                continue
-            label_counts[label_text] = label_counts.get(label_text, 0) + 1
-            selected_sample_ids.append(sample_id)
-            label_values[sample_id] = label_text
-            sample_labels.append((sample_id, label_text))
-
-        return task_type, label_counts, selected_sample_ids, label_values, sample_labels
+        thread.start()
 
     def _split_ratio_total(self) -> int:
         """Return the current train/val/test ratio total."""
@@ -1330,9 +1324,10 @@ class DatasetPage(QWidget):
 
         total_ratio = self._split_ratio_total()
         is_valid = total_ratio == 100
-        self.generate_button.setEnabled(is_valid)
+        self.generate_button.setEnabled(is_valid and not self._is_dataset_building() and not self._is_auto_labeling())
 
-        task_type, label_counts, selected_sample_ids, _, _ = self._collect_dataset_candidates()
+        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
+        label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
         if not is_valid:
             self.result_table.setRowCount(0)
             if update_status:
@@ -1351,51 +1346,15 @@ class DatasetPage(QWidget):
             f"当前划分比例已满足 100%，可生成{task_type}数据集：共 {len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
         )
 
-    def _build_split_values(self, sample_labels: list[tuple[str, str]]) -> dict[str, str]:
-        """按标签内顺序生成训练、验证、测试划分。"""
-
-        grouped: dict[str, list[str]] = {}
-        for sample_id, label in sample_labels:
-            grouped.setdefault(label, []).append(sample_id)
-
-        split_values: dict[str, str] = {}
-        for sample_ids in grouped.values():
-            train_count, val_count, test_count = self._calculate_split_counts(len(sample_ids))
-
-            for index, sample_id in enumerate(sample_ids):
-                if index < train_count:
-                    split_values[sample_id] = "train"
-                elif index < train_count + val_count:
-                    split_values[sample_id] = "val"
-                elif index < train_count + val_count + test_count:
-                    split_values[sample_id] = "test"
-        return split_values
-
     def _calculate_split_counts(self, total: int) -> tuple[int, int, int]:
         """Convert split percentages to concrete train/val/test counts."""
 
-        if total <= 0:
-            return 0, 0, 0
-
-        ratios = [
-            self.train_ratio.value() / 100,
-            self.val_ratio.value() / 100,
-            self.test_ratio.value() / 100,
-        ]
-        counts = [int(round(total * ratio)) for ratio in ratios]
-        diff = total - sum(counts)
-        adjust_order = [2, 1, 0]
-        adjust_index = 0
-        while diff != 0:
-            target_index = adjust_order[adjust_index % len(adjust_order)]
-            if diff > 0:
-                counts[target_index] += 1
-                diff -= 1
-            elif counts[target_index] > 0:
-                counts[target_index] -= 1
-                diff += 1
-            adjust_index += 1
-        return counts[0], counts[1], counts[2]
+        return calculate_split_counts(
+            total,
+            self.train_ratio.value(),
+            self.val_ratio.value(),
+            self.test_ratio.value(),
+        )
 
     def _next_generated_version_id(self) -> str:
         """Return the next dataset version ID for generated datasets."""
@@ -1434,3 +1393,66 @@ class DatasetPage(QWidget):
             ]
             for column, value in enumerate(values):
                 self._set_table_value(self.history_table, row_index, column, value)
+
+    def _on_dataset_build_progress(self, current: int, total: int, message: str) -> None:
+        """在数据集生成期间更新进度和状态文案。"""
+
+        self.dataset_build_progress.setRange(0, max(total, 1))
+        self.dataset_build_progress.setValue(current)
+        self.dataset_build_status_label.setText(f"{message} {current} / {total}")
+
+    def _on_dataset_build_finished(self, payload: dict[str, object]) -> None:
+        """数据集生成完成后统一刷新页面与下游联动。"""
+
+        record = payload["record"]
+        manifest_path = str(payload.get("manifest_path", ""))
+        label_counts = dict(payload.get("label_counts", {}))
+
+        self.dataset_versions = list_dataset_versions()
+        self.version_metric.set_value(record.version_id)
+        self._refresh_dataset_result_table(label_counts)
+        self._refresh_history_table()
+        self._set_dataset_building_state(False)
+        self.dataset_build_progress.setRange(0, max(int(payload.get("sample_total", 0)), 1))
+        self.dataset_build_progress.setValue(int(payload.get("sample_total", 0)))
+        self.dataset_build_progress.setFormat("数据集生成完成")
+        detail_text = f"当前标签数 {len(label_counts)}。"
+        if record.task_type == "类型识别" and len(label_counts) > 1:
+            detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别真实训练。"
+        self.dataset_build_status_label.setText(
+            f"数据集 {record.version_id} 已生成：{record.task_type} | 样本 {record.sample_count} 条 | "
+            f"manifest {manifest_path or '未生成'} | {detail_text}"
+        )
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _on_dataset_build_failed(self, message: str) -> None:
+        """数据集生成失败时恢复控件并展示错误。"""
+
+        self._set_dataset_building_state(False)
+        self.dataset_build_progress.setFormat("数据集生成失败")
+        self.dataset_build_status_label.setText(message)
+
+    def _clear_dataset_build_worker(self) -> None:
+        """在线程退出后清理数据集生成 worker 引用。"""
+
+        self._dataset_build_thread = None
+        self._dataset_build_worker = None
+
+    def _set_dataset_building_state(self, running: bool) -> None:
+        """根据数据集生成状态统一启用或禁用相关控件。"""
+
+        self.generate_button.setEnabled(not running and self._split_ratio_total() == 100 and not self._is_auto_labeling())
+        self.dataset_type_radio.setEnabled(not running)
+        self.dataset_individual_radio.setEnabled(not running)
+        self.train_ratio.setEnabled(not running)
+        self.val_ratio.setEnabled(not running)
+        self.test_ratio.setEnabled(not running)
+        self.strategy_box.setEnabled(not running)
+        self.delete_version_button.setEnabled(not running)
+        self.clear_database_button.setEnabled(not running)
+        self.auto_label_button.setEnabled(not running and not self._is_auto_labeling())
+
+    def _is_dataset_building(self) -> bool:
+        """返回当前是否存在正在执行的数据集生成任务。"""
+
+        return self._dataset_build_thread is not None

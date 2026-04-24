@@ -312,20 +312,24 @@ def create_dataset_version(
             ),
         )
         conn.execute("DELETE FROM dataset_items WHERE version_id = ?", (record.version_id,))
-        for sample_id in sample_ids:
-            conn.execute(
-                """
-                INSERT INTO dataset_items (version_id, sample_id, label_value, split, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    record.version_id,
-                    sample_id,
-                    label_values.get(sample_id, ""),
-                    split_values.get(sample_id, "train"),
-                    _now_text(),
-                ),
+        created_at = _now_text()
+        rows = [
+            (
+                record.version_id,
+                sample_id,
+                label_values.get(sample_id, ""),
+                split_values.get(sample_id, "train"),
+                created_at,
             )
+            for sample_id in sample_ids
+        ]
+        conn.executemany(
+            """
+            INSERT INTO dataset_items (version_id, sample_id, label_value, split, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
 
 
 def list_dataset_versions() -> list[DatasetVersionRecord]:
