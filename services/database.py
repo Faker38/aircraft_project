@@ -176,16 +176,31 @@ def upsert_samples(records: list[SampleRecord]) -> None:
     init_database()
     now = _now_text()
     with _connect() as conn:
+        records_by_path: dict[str, list[SampleRecord]] = {}
+        raw_file_ids: dict[str, int] = {}
+
         for record in records:
-            raw_file_id = _upsert_raw_file(
+            records_by_path.setdefault(record.raw_file_path, []).append(record)
+
+        for file_path, grouped_records in records_by_path.items():
+            first_record = grouped_records[0]
+            raw_file_ids[file_path] = _upsert_raw_file(
                 conn,
-                file_path=record.raw_file_path,
-                sample_rate_hz=record.sample_rate_hz,
-                center_frequency_hz=record.center_frequency_hz,
+                file_path=file_path,
+                sample_rate_hz=first_record.sample_rate_hz,
+                center_frequency_hz=first_record.center_frequency_hz,
                 bandwidth_hz=0.0,
                 now=now,
             )
-            _upsert_samples(conn, [record], raw_file_id=raw_file_id, preprocess_task_id=None, now=now)
+
+        for file_path, grouped_records in records_by_path.items():
+            _upsert_samples(
+                conn,
+                grouped_records,
+                raw_file_id=raw_file_ids[file_path],
+                preprocess_task_id=None,
+                now=now,
+            )
 
 
 def list_samples() -> list[SampleRecord]:

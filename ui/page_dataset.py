@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -38,6 +39,7 @@ from services import (
     upsert_samples,
     write_dataset_manifest,
 )
+from ui.auto_label_worker import AutoLabelWorker
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -65,6 +67,8 @@ class DatasetPage(QWidget):
         super().__init__(parent)
         init_database()
         self._mapping_edit_row: int | None = None
+        self._auto_label_thread: QThread | None = None
+        self._auto_label_worker: AutoLabelWorker | None = None
         self.sample_records: list[SampleRecord] = list_samples()
         self.dataset_versions: list[DatasetVersionRecord] = list_dataset_versions()
 
@@ -233,19 +237,19 @@ class DatasetPage(QWidget):
         button_row = QHBoxLayout()
         button_row.setSpacing(10)
 
-        new_button = QPushButton("新增映射")
-        new_button.clicked.connect(self._clear_mapping_form)
+        self.mapping_new_button = QPushButton("新增映射")
+        self.mapping_new_button.clicked.connect(self._clear_mapping_form)
 
-        save_button = QPushButton("保存映射")
-        save_button.setObjectName("PrimaryButton")
-        save_button.clicked.connect(self._save_mapping)
+        self.mapping_save_button = QPushButton("保存映射")
+        self.mapping_save_button.setObjectName("PrimaryButton")
+        self.mapping_save_button.clicked.connect(self._save_mapping)
 
-        delete_button = QPushButton("删除映射")
-        delete_button.clicked.connect(self._delete_mapping)
+        self.mapping_delete_button = QPushButton("删除映射")
+        self.mapping_delete_button.clicked.connect(self._delete_mapping)
 
-        button_row.addWidget(new_button)
-        button_row.addWidget(save_button)
-        button_row.addWidget(delete_button)
+        button_row.addWidget(self.mapping_new_button)
+        button_row.addWidget(self.mapping_save_button)
+        button_row.addWidget(self.mapping_delete_button)
         button_row.addStretch(1)
 
         self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号或批次编号自动回填标签。")
@@ -361,20 +365,25 @@ class DatasetPage(QWidget):
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
 
-        auto_button = QPushButton("自动标注")
-        auto_button.setObjectName("PrimaryButton")
-        auto_button.clicked.connect(self._apply_auto_labeling)
+        self.auto_label_button = QPushButton("自动标注")
+        self.auto_label_button.setObjectName("PrimaryButton")
+        self.auto_label_button.clicked.connect(self._apply_auto_labeling)
 
-        save_review_button = QPushButton("保存复核结果")
-        save_review_button.clicked.connect(self._save_manual_review)
+        self.save_review_button = QPushButton("保存复核结果")
+        self.save_review_button.clicked.connect(self._save_manual_review)
 
-        delete_sample_button = QPushButton("删除选中样本")
-        delete_sample_button.clicked.connect(self._delete_selected_sample)
+        self.delete_sample_button = QPushButton("删除选中样本")
+        self.delete_sample_button.clicked.connect(self._delete_selected_sample)
 
-        action_row.addWidget(auto_button)
-        action_row.addWidget(save_review_button)
-        action_row.addWidget(delete_sample_button)
+        action_row.addWidget(self.auto_label_button)
+        action_row.addWidget(self.save_review_button)
+        action_row.addWidget(self.delete_sample_button)
         action_row.addStretch(1)
+
+        self.auto_label_progress = QProgressBar()
+        self.auto_label_progress.setRange(0, 100)
+        self.auto_label_progress.setValue(0)
+        self.auto_label_progress.setFormat("等待自动标注")
 
         self.annotation_status_label = QLabel("当前模式：类型识别。自动标注仅作用于预处理输出样本。")
         self.annotation_status_label.setObjectName("MutedText")
@@ -388,6 +397,7 @@ class DatasetPage(QWidget):
         section.body_layout.addWidget(review_hint)
         section.body_layout.addLayout(review_layout)
         section.body_layout.addLayout(action_row)
+        section.body_layout.addWidget(self.auto_label_progress)
         section.body_layout.addWidget(self.annotation_status_label)
         return section
 
@@ -488,9 +498,9 @@ class DatasetPage(QWidget):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        delete_version_button = QPushButton("删除选中版本")
-        delete_version_button.clicked.connect(self._delete_selected_dataset_version)
-        action_row.addWidget(delete_version_button)
+        self.delete_version_button = QPushButton("删除选中版本")
+        self.delete_version_button.clicked.connect(self._delete_selected_dataset_version)
+        action_row.addWidget(self.delete_version_button)
         action_row.addStretch(1)
         section.body_layout.addLayout(action_row)
         return section
@@ -511,10 +521,10 @@ class DatasetPage(QWidget):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        clear_button = QPushButton("清空样本数据库")
-        clear_button.setObjectName("DangerButton")
-        clear_button.clicked.connect(self._clear_processed_dataset_database)
-        action_row.addWidget(clear_button)
+        self.clear_database_button = QPushButton("清空样本数据库")
+        self.clear_database_button.setObjectName("DangerButton")
+        self.clear_database_button.clicked.connect(self._clear_processed_dataset_database)
+        action_row.addWidget(self.clear_database_button)
         action_row.addStretch(1)
 
         section.body_layout.addWidget(warning_label)
@@ -784,45 +794,132 @@ class DatasetPage(QWidget):
         self._sync_review_form_from_selection()
 
     def _apply_auto_labeling(self) -> None:
-        """Fill local-preprocess sample labels by the current mapping table."""
+        """在后台线程中执行自动标注，避免大样本场景卡住界面。"""
+
+        if self._is_auto_labeling():
+            return
+
+        if not self.sample_records:
+            self.annotation_status_label.setText("当前没有可自动标注的样本，请先从预处理结果同步样本。")
+            return
 
         mapping_lookup = self._build_mapping_lookup()
-        matched_rows = 0
-        pending_rows = 0
+        if not mapping_lookup:
+            self.annotation_status_label.setText("请先建立至少一条编号映射，再执行自动标注。")
+            return
 
-        for row in range(self.sample_table.rowCount()):
-            device_id = self._item_text(self.sample_table, row, self.DEVICE_COLUMN)
-            mapping = mapping_lookup.get(device_id)
-            if mapping is None:
-                self._set_table_value(self.sample_table, row, self.TYPE_COLUMN, "")
-                self._set_table_value(self.sample_table, row, self.INDIVIDUAL_COLUMN, "")
-                self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待标注")
-                pending_rows += 1
-                self._sync_sample_record_from_row(row)
-                continue
+        thread = QThread(self)
+        worker = AutoLabelWorker(
+            sample_records=self.sample_records,
+            mapping_lookup=mapping_lookup,
+            individual_mode=self.individual_radio.isChecked(),
+        )
+        worker.moveToThread(thread)
 
-            self._set_table_value(self.sample_table, row, self.TYPE_COLUMN, mapping["type"])
-            if self.individual_radio.isChecked():
-                self._set_table_value(self.sample_table, row, self.INDIVIDUAL_COLUMN, mapping["individual"])
-                if mapping["individual"]:
-                    self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "已标注")
-                    matched_rows += 1
-                else:
-                    self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "待标注")
-                    pending_rows += 1
-            else:
-                self._set_table_value(self.sample_table, row, self.STATUS_COLUMN, "已标注")
-                matched_rows += 1
-            self._sync_sample_record_from_row(row)
+        thread.started.connect(worker.run)
+        worker.progress_changed.connect(self._on_auto_label_progress)
+        worker.finished.connect(self._on_auto_label_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(self._on_auto_label_failed)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_auto_label_worker)
+        thread.finished.connect(thread.deleteLater)
 
+        self._auto_label_thread = thread
+        self._auto_label_worker = worker
+        self._set_auto_labeling_state(True)
+        self.auto_label_progress.setRange(0, max(len(self.sample_records), 1))
+        self.auto_label_progress.setValue(0)
+        self.auto_label_progress.setFormat("自动标注 %v / %m")
+        self.annotation_status_label.setText(
+            f"正在后台执行自动标注：0 / {len(self.sample_records)}。界面保持可刷新，请稍候。"
+        )
+        thread.start()
+
+    def _on_auto_label_progress(self, current: int, total: int, matched: int, pending: int) -> None:
+        """在自动标注运行期间更新进度和状态文案。"""
+
+        self.auto_label_progress.setRange(0, max(total, 1))
+        self.auto_label_progress.setValue(current)
+        self.annotation_status_label.setText(
+            f"正在自动标注 {current} / {total} | 已命中 {matched} 条 | 待人工标注 {pending} 条"
+        )
+
+    def _on_auto_label_finished(self, updated_records: list[SampleRecord], summary: dict[str, int]) -> None:
+        """自动标注完成后统一写库并刷新页面。"""
+
+        try:
+            upsert_samples(updated_records)
+        except Exception as exc:
+            self._set_auto_labeling_state(False)
+            self.annotation_status_label.setText(f"自动标注完成，但数据库写入失败：{exc}")
+            self.auto_label_progress.setFormat("自动标注失败")
+            return
+
+        self.sample_records = list(updated_records)
+        self._refresh_sample_table()
+        self._sync_device_filter_options()
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
-        self._refresh_dataset_generation_controls()
+        self._refresh_dataset_generation_controls(update_status=False)
+        self._set_auto_labeling_state(False)
+        self.auto_label_progress.setRange(0, max(summary.get("total", 0), 1))
+        self.auto_label_progress.setValue(summary.get("total", 0))
+        self.auto_label_progress.setFormat("自动标注完成")
         self.annotation_status_label.setText(
-            f"自动标注完成：{matched_rows} 条已按映射回填，{pending_rows} 条仍需人工标注。"
+            f"自动标注完成：命中 {summary.get('matched', 0)} 条，"
+            f"待人工标注 {summary.get('pending', 0)} 条，"
+            f"更新 {summary.get('updated', 0)} 条。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
+
+    def _on_auto_label_failed(self, message: str) -> None:
+        """自动标注失败时恢复控件并展示错误。"""
+
+        self._set_auto_labeling_state(False)
+        self.auto_label_progress.setFormat("自动标注失败")
+        self.annotation_status_label.setText(message)
+
+    def _clear_auto_label_worker(self) -> None:
+        """在线程退出后清理自动标注 worker 引用。"""
+
+        self._auto_label_thread = None
+        self._auto_label_worker = None
+
+    def _set_auto_labeling_state(self, running: bool) -> None:
+        """根据自动标注运行状态统一启用或禁用相关控件。"""
+
+        self.auto_label_button.setEnabled(not running)
+        self.mapping_new_button.setEnabled(not running)
+        self.mapping_save_button.setEnabled(not running)
+        self.mapping_delete_button.setEnabled(not running)
+        self.mapping_table.setEnabled(not running)
+        self.mapping_device_input.setEnabled(not running)
+        self.mapping_type_input.setEnabled(not running)
+        self.mapping_individual_input.setEnabled(not running)
+        self.mapping_note_input.setEnabled(not running)
+        self.type_radio.setEnabled(not running)
+        self.individual_radio.setEnabled(not running)
+        self.device_filter.setEnabled(not running)
+        self.status_filter.setEnabled(not running)
+        self.sample_table.setEnabled(not running)
+        self.review_type_input.setEnabled(not running)
+        self.review_individual_input.setEnabled(not running and self.individual_radio.isChecked())
+        self.review_status_box.setEnabled(not running)
+        self.review_include_checkbox.setEnabled(not running and self.review_status_box.currentText() != "已排除")
+        self.save_review_button.setEnabled(not running)
+        self.delete_sample_button.setEnabled(not running)
+        self.generate_button.setEnabled(not running and self._split_ratio_total() == 100)
+        self.delete_version_button.setEnabled(not running)
+        self.clear_database_button.setEnabled(not running)
+
+    def _is_auto_labeling(self) -> bool:
+        """返回当前是否存在正在执行的自动标注任务。"""
+
+        return self._auto_label_thread is not None
 
     def _on_review_status_changed(self, status_text: str) -> None:
         """根据标注状态同步“是否纳入数据集”的可操作性。"""
