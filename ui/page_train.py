@@ -65,9 +65,11 @@ class TrainPage(QWidget):
 
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
-        self.accuracy_metric = MetricCard("测试精度", "-", compact=True)
-        self.f1_metric = MetricCard("宏平均 F1", "-", accent_color="#7CB98B", compact=True)
-        self.export_metric = MetricCard("当前产物", "未生成", accent_color="#C59A63", compact=True)
+        self.val_accuracy_metric = MetricCard("验证精度", "-", compact=True)
+        self.accuracy_metric = MetricCard("测试精度", "-", accent_color="#7CB98B", compact=True)
+        self.f1_metric = MetricCard("宏平均 F1", "-", accent_color="#C59A63", compact=True)
+        self.export_metric = MetricCard("当前产物", "未生成", accent_color="#6CA5D9", compact=True)
+        metrics_row.addWidget(self.val_accuracy_metric)
         metrics_row.addWidget(self.accuracy_metric)
         metrics_row.addWidget(self.f1_metric)
         metrics_row.addWidget(self.export_metric)
@@ -200,7 +202,13 @@ class TrainPage(QWidget):
         self.max_depth_spin.setSpecialValueText("不限")
         self.max_depth_spin.setValue(24)
 
-        tip_label = QLabel("当前真实训练固定使用 RandomForest，后续再扩展到 SVM / XGBoost。")
+        self.random_state_spin = QSpinBox()
+        self.random_state_spin.setRange(0, 999999999)
+        self.random_state_spin.setValue(42)
+
+        tip_label = QLabel(
+            "当前真实训练固定使用 RandomForest。默认随机种子为 42；相同数据集版本、参数与随机种子下，结果稳定重复是预期行为。"
+        )
         tip_label.setObjectName("MutedText")
         tip_label.setWordWrap(True)
 
@@ -208,6 +216,7 @@ class TrainPage(QWidget):
         form_layout.addRow("模型名称", self.model_name_input)
         form_layout.addRow("树数量", self.n_estimators_spin)
         form_layout.addRow("最大深度", self.max_depth_spin)
+        form_layout.addRow("随机种子", self.random_state_spin)
         form_layout.addRow("", tip_label)
         return box
 
@@ -300,6 +309,11 @@ class TrainPage(QWidget):
             "任务类型": QLabel("-"),
             "算法": QLabel("-"),
             "数据集版本": QLabel("-"),
+            "随机种子": QLabel("-"),
+            "树数量": QLabel("-"),
+            "最大深度": QLabel("-"),
+            "验证精度": QLabel("-"),
+            "测试精度": QLabel("-"),
             "模型路径": QLabel("-"),
         }
         for label in self.export_detail_labels.values():
@@ -396,11 +410,13 @@ class TrainPage(QWidget):
             model_name=self.model_name_input.text().strip() or f"rf_type_{record.version_id}",
             n_estimators=self.n_estimators_spin.value(),
             max_depth=self.max_depth_spin.value(),
+            random_state=self.random_state_spin.value(),
         )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
         worker.started.connect(self._on_train_started)
+        worker.progress_changed.connect(self._on_train_progress)
         worker.finished.connect(self._on_train_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -418,15 +434,43 @@ class TrainPage(QWidget):
     def _on_train_started(self, version_id: str) -> None:
         """在训练真正开始时刷新状态。"""
 
-        self.training_status_badge.set_status("训练中", "info", size="sm")
-        self.training_log.setPlainText(f"开始训练类型识别模型 | 数据集版本 {version_id}\n")
-        self.confusion_placeholder.setPlainText("训练进行中，请稍候...\n\n当前会读取 manifest、提取 IQ 特征并训练 RandomForest 模型。")
+        self.training_status_badge.set_status("正在准备训练", "info", size="sm")
+        self.training_log.setPlainText(
+            "\n".join(
+                [
+                    f"开始训练类型识别模型 | 数据集版本 {version_id}",
+                    "当前训练属于传统机器学习的单次拟合过程，不是按 epoch 连续刷新的深度学习训练。",
+                    f"当前参数：trees={self.n_estimators_spin.value()} / max_depth={self._format_depth_text(self.max_depth_spin.value())} / seed={self.random_state_spin.value()}",
+                ]
+            )
+        )
+        self.confusion_placeholder.setPlainText(
+            "训练进行中，请稍候...\n\n"
+            "当前会按阶段执行：读取版本 -> 统计划分 -> 提取特征 -> 训练随机森林 -> 评估结果 -> 写入模型。"
+        )
+
+    def _on_train_progress(self, stage_text: str, log_text: str) -> None:
+        """在训练过程中持续刷新阶段性状态。"""
+
+        self.training_status_badge.set_status(stage_text, "info", size="sm")
+        self.confusion_placeholder.setPlainText(
+            "\n".join(
+                [
+                    f"当前阶段：{stage_text}",
+                    "",
+                    "当前训练属于单次拟合过程，不会像 epoch 式训练那样连续刷新 loss 曲线。",
+                    "相同数据集版本、参数与随机种子下，结果稳定重复是预期行为。",
+                ]
+            )
+        )
+        self._append_training_log(log_text)
 
     def _on_train_finished(self, result: TrainingRunResult) -> None:
         """渲染一次真实训练结果。"""
 
         self._set_running_state(False)
         self.training_status_badge.set_status("训练完成", "success", size="sm")
+        self.val_accuracy_metric.set_value(result.model_record.validation_accuracy_text)
         self.accuracy_metric.set_value(result.model_record.accuracy_text)
         self.f1_metric.set_value(result.model_record.macro_f1_text)
         self.export_metric.set_value("joblib")
@@ -469,6 +513,7 @@ class TrainPage(QWidget):
             f"[Check] 划分数量：train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
             f"[Check] 标签数：{len(label_counts)}",
             f"[Check] 标签分布：{label_summary or '-'}",
+            f"[Check] 当前训练参数：trees={self.n_estimators_spin.value()} / max_depth={self._format_depth_text(self.max_depth_spin.value())} / seed={self.random_state_spin.value()}",
         ]
 
         if detail.missing_file_count:
@@ -502,8 +547,11 @@ class TrainPage(QWidget):
             f"数据集版本：{record.dataset_version_id}",
             f"任务类型：{record.task_type}",
             f"训练算法：{record.model_kind}",
+            f"验证精度：{record.validation_accuracy_text}",
             f"特征维度：{result.feature_count}",
             f"测试精度：{accuracy_text} | 宏平均 F1：{f1_text}",
+            f"训练参数：trees={record.n_estimators_text} / max_depth={record.max_depth_text} / seed={record.random_state_text}",
+            f"说明：当前结果来自固定版本 {record.dataset_version_id} 的一次可复现实验。",
             "",
             "标签分布：",
             *label_lines,
@@ -600,6 +648,11 @@ class TrainPage(QWidget):
         self.export_detail_labels["任务类型"].setText(record.task_type)
         self.export_detail_labels["算法"].setText(record.model_kind)
         self.export_detail_labels["数据集版本"].setText(record.dataset_version_id)
+        self.export_detail_labels["随机种子"].setText(record.random_state_text)
+        self.export_detail_labels["树数量"].setText(record.n_estimators_text)
+        self.export_detail_labels["最大深度"].setText(record.max_depth_text)
+        self.export_detail_labels["验证精度"].setText(record.validation_accuracy_text)
+        self.export_detail_labels["测试精度"].setText(record.accuracy_text)
         self.export_detail_labels["模型路径"].setText(record.artifact_path)
         artifact_path = Path(record.artifact_path)
         metadata_path = artifact_path.with_name("metadata.json")
@@ -764,6 +817,7 @@ class TrainPage(QWidget):
         self.model_name_input.setEnabled(not running)
         self.n_estimators_spin.setEnabled(not running)
         self.max_depth_spin.setEnabled(not running)
+        self.random_state_spin.setEnabled(not running)
         self.start_button.setEnabled(not running)
 
     def _is_running(self) -> bool:
@@ -781,3 +835,16 @@ class TrainPage(QWidget):
         """把标签转换为适合界面展示的文本。"""
 
         return label.replace("_", " ")
+
+    def _append_training_log(self, message: str) -> None:
+        """向训练日志追加一条阶段消息，避免重复刷同一行。"""
+
+        current_text = self.training_log.toPlainText()
+        if current_text.endswith(message):
+            return
+        self.training_log.appendPlainText(message)
+
+    def _format_depth_text(self, max_depth: int) -> str:
+        """把训练页中的最大深度配置转换为展示文本。"""
+
+        return "不限" if int(max_depth) <= 0 else str(int(max_depth))

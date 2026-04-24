@@ -11,6 +11,7 @@ class TrainRunWorker(QObject):
     """把一次训练任务放到 UI 线程之外执行。"""
 
     started = Signal(str)
+    progress_changed = Signal(str, str)
     finished = Signal(object)
     failed = Signal(str)
 
@@ -21,6 +22,7 @@ class TrainRunWorker(QObject):
         model_name: str,
         n_estimators: int,
         max_depth: int,
+        random_state: int,
     ) -> None:
         """保存本次训练任务所需参数。"""
 
@@ -29,6 +31,7 @@ class TrainRunWorker(QObject):
         self.model_name = model_name
         self.n_estimators = n_estimators
         self.max_depth = max_depth
+        self.random_state = random_state
 
     @Slot()
     def run(self) -> None:
@@ -41,6 +44,8 @@ class TrainRunWorker(QObject):
                 model_name=self.model_name,
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
+                random_state=self.random_state,
+                progress_callback=self.progress_changed.emit,
             )
         except ModelServiceError as exc:
             self.failed.emit(str(exc))

@@ -122,6 +122,38 @@ class TrainedModelRecord:
             return "-"
         return f"{float(value):.3f}"
 
+    @property
+    def validation_accuracy_text(self) -> str:
+        """返回适合界面展示的验证集精度文本。"""
+
+        value = self.metrics.get("val_accuracy")
+        if value is None:
+            return "-"
+        return f"{float(value) * 100:.1f}%"
+
+    @property
+    def random_state_text(self) -> str:
+        """返回适合界面展示的随机种子文本。"""
+
+        value = self.metrics.get("random_state")
+        return str(value) if value is not None else "-"
+
+    @property
+    def n_estimators_text(self) -> str:
+        """返回适合界面展示的树数量文本。"""
+
+        value = self.metrics.get("n_estimators")
+        return str(value) if value is not None else "-"
+
+    @property
+    def max_depth_text(self) -> str:
+        """返回适合界面展示的最大深度文本。"""
+
+        value = self.metrics.get("max_depth")
+        if value in (None, 0, "0"):
+            return "不限"
+        return str(value)
+
 
 @dataclass(frozen=True)
 class TrainingMetricRow:

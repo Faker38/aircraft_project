@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import Counter
 from datetime import datetime
 import json
@@ -48,6 +49,7 @@ def train_type_model(
     n_estimators: int = 300,
     max_depth: int = 24,
     random_state: int = 42,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> TrainingRunResult:
     """基于一个类型识别数据集版本训练真实模型。"""
 
@@ -63,10 +65,22 @@ def train_type_model(
     if detail.empty_label_count:
         raise ModelServiceError(f"当前版本有 {detail.empty_label_count} 条样本标签为空，请先回到数据集页补齐。")
 
+    _emit_train_progress(
+        progress_callback,
+        "正在读取数据集版本",
+        f"[Stage] 已读取数据集版本 {version_id}，开始准备 manifest 与训练输入。",
+    )
+
     # 训练前重新写一份 manifest，确保训练页和服务层看到的是同一版样本清单。
     manifest_path = write_dataset_manifest(version_id)
     if manifest_path is None:
         raise ModelServiceError("数据集 manifest 生成失败，无法继续训练。")
+
+    _emit_train_progress(
+        progress_callback,
+        "正在统计标签与划分",
+        f"[Stage] 已生成 manifest，开始统计标签分布与数据划分：{manifest_path}",
+    )
 
     label_counts = Counter(item.label_value for item in detail.items if item.label_value)
     if len(label_counts) < 2:
@@ -82,10 +96,17 @@ def train_type_model(
         f"[Info] Manifest: {manifest_path}",
         f"[Info] 标签数: {len(label_counts)} | 标签分布: {dict(label_counts)}",
         f"[Info] 数据划分: train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
+        f"[Info] 训练参数: random_state={int(random_state)} / n_estimators={int(n_estimators)} / max_depth={_format_max_depth(max_depth)}",
+        "[Info] 当前训练为可复现实验：相同版本、参数与随机种子下，结果稳定重复是预期行为。",
     ]
 
     split_features: dict[str, list[np.ndarray]] = {"train": [], "val": [], "test": []}
     split_labels: dict[str, list[str]] = {"train": [], "val": [], "test": []}
+    _emit_train_progress(
+        progress_callback,
+        "正在提取样本特征",
+        f"[Stage] 开始提取 IQ 特征，共 {len(detail.items)} 条样本。",
+    )
     for item in detail.items:
         features = extract_iq_features(item.sample_file_path)
         split_features[item.split].append(features)
@@ -101,9 +122,15 @@ def train_type_model(
     if len(set(y_train.tolist())) < 2:
         raise ModelServiceError("训练集内实际可用标签不足两类，无法完成真实训练。")
 
+    resolved_max_depth = None if int(max_depth) <= 0 else int(max_depth)
+    _emit_train_progress(
+        progress_callback,
+        "正在训练随机森林",
+        f"[Stage] 特征提取完成，开始拟合 RandomForest：trees={int(n_estimators)} / max_depth={_format_max_depth(max_depth)} / seed={int(random_state)}",
+    )
     clf = RandomForestClassifier(
         n_estimators=int(n_estimators),
-        max_depth=None if int(max_depth) <= 0 else int(max_depth),
+        max_depth=resolved_max_depth,
         random_state=int(random_state),
         # 演示环境优先稳定性，固定单进程，避免 Windows 下 joblib 并行权限问题。
         n_jobs=1,
@@ -111,6 +138,11 @@ def train_type_model(
     )
     clf.fit(x_train, y_train)
 
+    _emit_train_progress(
+        progress_callback,
+        "正在评估模型",
+        "[Stage] 随机森林拟合完成，开始计算验证集、测试集指标与混淆矩阵。",
+    )
     y_val_pred = clf.predict(x_val)
     y_test_pred = clf.predict(x_test)
     label_space = [str(label) for label in clf.classes_]
@@ -139,6 +171,11 @@ def train_type_model(
     model_path = model_dir / "model.joblib"
     metadata_path = model_dir / "metadata.json"
 
+    _emit_train_progress(
+        progress_callback,
+        "正在写入模型文件",
+        f"[Stage] 评估完成，开始写入模型与元数据：{model_path}",
+    )
     model_payload = {
         "model_id": model_id,
         "dataset_version_id": version_id,
@@ -147,6 +184,11 @@ def train_type_model(
         "feature_names": list(FEATURE_NAMES),
         "label_space": label_space,
         "trained_at": _now_text(),
+        "training_config": {
+            "random_state": int(random_state),
+            "n_estimators": int(n_estimators),
+            "max_depth": resolved_max_depth,
+        },
         "model": clf,
     }
     joblib.dump(model_payload, model_path)
@@ -159,6 +201,9 @@ def train_type_model(
         "split_counts": {key: int(value) for key, value in split_counts.items()},
         "label_counts": {key: int(value) for key, value in label_counts.items()},
         "confusion_matrix": matrix.tolist(),
+        "random_state": int(random_state),
+        "n_estimators": int(n_estimators),
+        "max_depth": resolved_max_depth,
     }
     metadata_payload: dict[str, Any] = {
         "model_id": model_id,
@@ -167,6 +212,11 @@ def train_type_model(
         "model_kind": "RandomForest",
         "label_space": label_space,
         "feature_names": list(FEATURE_NAMES),
+        "training_config": {
+            "random_state": int(random_state),
+            "n_estimators": int(n_estimators),
+            "max_depth": resolved_max_depth,
+        },
         "metrics": metrics_payload,
         "metric_rows": [
             {
@@ -261,6 +311,26 @@ def predict_type_sample(model_id: str, sample_file_path: str) -> PredictionResul
         confidence=float(confidence),
         probabilities=probabilities,
     )
+
+
+def _emit_train_progress(
+    progress_callback: Callable[[str, str], None] | None,
+    stage_text: str,
+    log_text: str,
+) -> None:
+    """向训练页发出阶段性进度消息。"""
+
+    if progress_callback is None:
+        return
+    progress_callback(stage_text, log_text)
+
+
+def _format_max_depth(max_depth: int | None) -> str:
+    """把最大深度转换为适合日志展示的文本。"""
+
+    if max_depth is None or int(max_depth) <= 0:
+        return "不限"
+    return str(int(max_depth))
 
 
 def extract_iq_features(sample_file_path: str | Path) -> np.ndarray:
