@@ -50,6 +50,7 @@ python main.py
 - 生成数据集版本后，会输出 `data/datasets/{version_id}/manifest.json`。
 - 训练页选择对应版本后，可执行数据检查、真实训练，并生成 `data/models/{model_id}/model.joblib` 与 `metadata.json`。
 - 识别页会直接读取数据库中的真实模型记录，对样本执行类型识别。
+- 删除数据集版本时，不会删除已训练模型记录；清空样本数据库时，仍会一并清空模型记录。
 
 `data/` 和 `db/` 都是本地运行数据目录，默认不提交到 Git 仓库。
 

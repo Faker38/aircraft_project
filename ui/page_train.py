@@ -52,6 +52,7 @@ class TrainPage(QWidget):
         self.trained_models: list[TrainedModelRecord] = list_trained_models()
         self._train_thread: QThread | None = None
         self._train_worker: TrainRunWorker | None = None
+        self._stop_requested = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -165,6 +166,11 @@ class TrainPage(QWidget):
 
         self.stop_button = QPushButton("中止训练")
         self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._request_stop_training)
+
+        stop_hint = QLabel("训练中可请求停止；若已进入随机森林拟合，需等待当前阶段结束。")
+        stop_hint.setObjectName("MutedText")
+        stop_hint.setWordWrap(True)
 
         validate_button = QPushButton("数据检查")
         validate_button.clicked.connect(self._run_dataset_check)
@@ -177,6 +183,7 @@ class TrainPage(QWidget):
         section.body_layout.addLayout(switch_row)
         section.body_layout.addWidget(self.config_stack)
         section.body_layout.addLayout(action_row)
+        section.body_layout.addWidget(stop_hint)
         return section
 
     def _build_ml_form(self) -> QGroupBox:
@@ -309,6 +316,7 @@ class TrainPage(QWidget):
             "任务类型": QLabel("-"),
             "算法": QLabel("-"),
             "数据集版本": QLabel("-"),
+            "版本状态": QLabel("-"),
             "随机种子": QLabel("-"),
             "树数量": QLabel("-"),
             "最大深度": QLabel("-"),
@@ -417,9 +425,12 @@ class TrainPage(QWidget):
         thread.started.connect(worker.run)
         worker.started.connect(self._on_train_started)
         worker.progress_changed.connect(self._on_train_progress)
+        worker.cancelled.connect(self._on_train_cancelled)
         worker.finished.connect(self._on_train_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
+        worker.cancelled.connect(thread.quit)
+        worker.cancelled.connect(worker.deleteLater)
         worker.failed.connect(self._on_train_failed)
         worker.failed.connect(thread.quit)
         worker.failed.connect(worker.deleteLater)
@@ -428,8 +439,25 @@ class TrainPage(QWidget):
 
         self._train_thread = thread
         self._train_worker = worker
+        self._stop_requested = False
         self._set_running_state(True)
         thread.start()
+
+    def _request_stop_training(self) -> None:
+        """请求当前训练任务在安全检查点停止。"""
+
+        if not self._is_running() or self._train_worker is None or self._stop_requested:
+            return
+
+        self._stop_requested = True
+        self._train_worker.request_cancel()
+        self.stop_button.setEnabled(False)
+        self.training_status_badge.set_status("停止中", "warning", size="sm")
+        self._append_training_log("已接收停止请求。若当前已进入随机森林拟合阶段，需等待该阶段结束后停止。")
+        self.confusion_placeholder.setPlainText(
+            "停止请求已接收。\n\n"
+            "当前训练采用单次拟合方式；如果已经进入随机森林拟合阶段，无法瞬时强停，系统会在当前阶段结束后丢弃本次结果，不写入模型。"
+        )
 
     def _on_train_started(self, version_id: str) -> None:
         """在训练真正开始时刷新状态。"""
@@ -469,6 +497,7 @@ class TrainPage(QWidget):
         """渲染一次真实训练结果。"""
 
         self._set_running_state(False)
+        self._stop_requested = False
         self.training_status_badge.set_status("训练完成", "success", size="sm")
         self.val_accuracy_metric.set_value(result.model_record.validation_accuracy_text)
         self.accuracy_metric.set_value(result.model_record.accuracy_text)
@@ -485,10 +514,30 @@ class TrainPage(QWidget):
             f"最新模型 {result.model_record.model_id} 已生成，可直接在识别页加载并执行类型识别。"
         )
 
+    def _on_train_cancelled(self, message: str) -> None:
+        """渲染一次协作式停止结果。"""
+
+        self._set_running_state(False)
+        self._stop_requested = False
+        self.training_status_badge.set_status("已停止", "warning", size="sm")
+        self.training_log.appendPlainText(message)
+        self.confusion_placeholder.setPlainText(
+            "本次训练已停止。\n\n"
+            "当前请求已在安全检查点生效，本次不会生成新的模型记录，也不会写入新的模型产物。"
+        )
+        self._refresh_trained_model_list_from_database()
+        if self.trained_models:
+            self.export_summary_label.setText("本次训练已停止，未生成新模型；当前已有模型记录保持不变。")
+        else:
+            self.export_metric.set_value("未生成")
+            self.export_summary_badge.set_status("待模型", "info", size="sm")
+            self.export_summary_label.setText("本次训练已停止，且当前没有可用模型记录。")
+
     def _on_train_failed(self, message: str) -> None:
         """渲染训练失败结果。"""
 
         self._set_running_state(False)
+        self._stop_requested = False
         self.training_status_badge.set_status("训练失败", "danger", size="sm")
         self.training_log.setPlainText(message)
         self.confusion_placeholder.setPlainText("训练未完成，请先修正数据集或模型配置后重试。")
@@ -648,6 +697,8 @@ class TrainPage(QWidget):
         self.export_detail_labels["任务类型"].setText(record.task_type)
         self.export_detail_labels["算法"].setText(record.model_kind)
         self.export_detail_labels["数据集版本"].setText(record.dataset_version_id)
+        version_exists = any(item.version_id == record.dataset_version_id for item in self.dataset_versions)
+        self.export_detail_labels["版本状态"].setText("正常" if version_exists else "来源版本已删除")
         self.export_detail_labels["随机种子"].setText(record.random_state_text)
         self.export_detail_labels["树数量"].setText(record.n_estimators_text)
         self.export_detail_labels["最大深度"].setText(record.max_depth_text)
@@ -661,9 +712,14 @@ class TrainPage(QWidget):
         if model_exists:
             self.export_status_badge.set_status(record.status, "success", size="sm")
             self.export_summary_badge.set_status("可识别", "success", size="sm")
-            self.export_summary_label.setText(
-                f"模型 {record.model_id} 已就绪，可直接用于类型识别页面；当前真实产物为 joblib。"
-            )
+            if version_exists:
+                self.export_summary_label.setText(
+                    f"模型 {record.model_id} 已就绪，可直接用于类型识别页面；当前真实产物为 joblib。"
+                )
+            else:
+                self.export_summary_label.setText(
+                    f"模型 {record.model_id} 仍可正常用于识别，但其来源数据集版本 {record.dataset_version_id} 已被删除。"
+                )
         else:
             self.export_status_badge.set_status("模型缺失", "danger", size="sm")
             self.export_summary_badge.set_status("模型缺失", "danger", size="sm")
@@ -819,6 +875,7 @@ class TrainPage(QWidget):
         self.max_depth_spin.setEnabled(not running)
         self.random_state_spin.setEnabled(not running)
         self.start_button.setEnabled(not running)
+        self.stop_button.setEnabled(running and not self._stop_requested)
 
     def _is_running(self) -> bool:
         """返回当前是否存在正在执行的训练任务。"""

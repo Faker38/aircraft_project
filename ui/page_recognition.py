@@ -17,7 +17,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from services import ModelServiceError, PredictionResult, SampleRecord, TrainedModelRecord, predict_type_sample
+from services import (
+    ModelServiceError,
+    PredictionResult,
+    SampleRecord,
+    TrainedModelRecord,
+    get_dataset_version_detail,
+    predict_type_sample,
+)
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
 
@@ -187,7 +194,8 @@ class RecognitionPage(QWidget):
         model_selector.clear()
         if mode_key == "type":
             for record in self.trained_models:
-                display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}"
+                version_hint = " | 来源版本已删" if self._is_model_version_deleted(record) else ""
+                display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}{version_hint}"
                 model_selector.addItem(display_text, record)
         else:
             model_selector.addItem("演示模式 | 个体识别待接入", "demo")
@@ -348,6 +356,7 @@ class RecognitionPage(QWidget):
                 ["来源路径", record.raw_file_path],
                 ["来源类型", record.source_label],
                 ["样本路径", record.sample_file_path],
+                ["来源版本状态", self._model_version_status_text(model_record) if mode_key == "type" and isinstance(model_record, TrainedModelRecord) else "-"],
             ],
             status_text=f"已加载 {record.sample_id}",
         )
@@ -439,6 +448,8 @@ class RecognitionPage(QWidget):
             ["来源路径", sample_record.raw_file_path],
             ["来源类型", sample_record.source_label],
             ["识别模型", result.model_record.model_id],
+            ["来源版本", result.model_record.dataset_version_id],
+            ["来源版本状态", self._model_version_status_text(result.model_record)],
             ["标签空间", " / ".join(self._display_label(label) for label in result.model_record.label_space)],
         ]
         self.latest_result_metric.set_value(self._display_label(predicted_label))
@@ -482,3 +493,13 @@ class RecognitionPage(QWidget):
         if len(sample_id) <= 26:
             return sample_id
         return f"{sample_id[:10]}...{sample_id[-10:]}"
+
+    def _is_model_version_deleted(self, record: TrainedModelRecord) -> bool:
+        """判断模型来源的数据集版本当前是否已删除。"""
+
+        return get_dataset_version_detail(record.dataset_version_id) is None
+
+    def _model_version_status_text(self, record: TrainedModelRecord) -> str:
+        """返回模型来源版本的状态文本。"""
+
+        return "来源版本已删除" if self._is_model_version_deleted(record) else "正常"

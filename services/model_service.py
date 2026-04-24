@@ -42,6 +42,10 @@ class ModelServiceError(RuntimeError):
     """训练或推理阶段的统一业务异常。"""
 
 
+class TrainingCancelled(ModelServiceError):
+    """用于标记一次协作式训练取消。"""
+
+
 def train_type_model(
     version_id: str,
     *,
@@ -50,6 +54,7 @@ def train_type_model(
     max_depth: int = 24,
     random_state: int = 42,
     progress_callback: Callable[[str, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> TrainingRunResult:
     """基于一个类型识别数据集版本训练真实模型。"""
 
@@ -70,6 +75,7 @@ def train_type_model(
         "正在读取数据集版本",
         f"[Stage] 已读取数据集版本 {version_id}，开始准备 manifest 与训练输入。",
     )
+    _raise_if_cancelled(cancel_check, "训练已停止：在读取数据集版本后取消。")
 
     # 训练前重新写一份 manifest，确保训练页和服务层看到的是同一版样本清单。
     manifest_path = write_dataset_manifest(version_id)
@@ -81,6 +87,7 @@ def train_type_model(
         "正在统计标签与划分",
         f"[Stage] 已生成 manifest，开始统计标签分布与数据划分：{manifest_path}",
     )
+    _raise_if_cancelled(cancel_check, "训练已停止：在 manifest 生成后取消。")
 
     label_counts = Counter(item.label_value for item in detail.items if item.label_value)
     if len(label_counts) < 2:
@@ -107,7 +114,14 @@ def train_type_model(
         "正在提取样本特征",
         f"[Stage] 开始提取 IQ 特征，共 {len(detail.items)} 条样本。",
     )
-    for item in detail.items:
+    for index, item in enumerate(detail.items, start=1):
+        if index == 1 or index % 1000 == 0 or index == len(detail.items):
+            _emit_train_progress(
+                progress_callback,
+                "正在提取样本特征",
+                f"[Stage] 正在提取 IQ 特征：{index}/{len(detail.items)}",
+            )
+        _raise_if_cancelled(cancel_check, f"训练已停止：特征提取已处理 {index - 1} 条样本。")
         features = extract_iq_features(item.sample_file_path)
         split_features[item.split].append(features)
         split_labels[item.split].append(item.label_value)
@@ -128,6 +142,7 @@ def train_type_model(
         "正在训练随机森林",
         f"[Stage] 特征提取完成，开始拟合 RandomForest：trees={int(n_estimators)} / max_depth={_format_max_depth(max_depth)} / seed={int(random_state)}",
     )
+    _raise_if_cancelled(cancel_check, "训练已停止：在进入随机森林拟合前取消。")
     clf = RandomForestClassifier(
         n_estimators=int(n_estimators),
         max_depth=resolved_max_depth,
@@ -137,12 +152,14 @@ def train_type_model(
         class_weight="balanced_subsample",
     )
     clf.fit(x_train, y_train)
+    _raise_if_cancelled(cancel_check, "训练已停止：随机森林拟合已完成，当前结果不会保存。")
 
     _emit_train_progress(
         progress_callback,
         "正在评估模型",
         "[Stage] 随机森林拟合完成，开始计算验证集、测试集指标与混淆矩阵。",
     )
+    _raise_if_cancelled(cancel_check, "训练已停止：在模型评估前取消。")
     y_val_pred = clf.predict(x_val)
     y_test_pred = clf.predict(x_test)
     label_space = [str(label) for label in clf.classes_]
@@ -176,6 +193,7 @@ def train_type_model(
         "正在写入模型文件",
         f"[Stage] 评估完成，开始写入模型与元数据：{model_path}",
     )
+    _raise_if_cancelled(cancel_check, "训练已停止：在写入模型文件前取消。")
     model_payload = {
         "model_id": model_id,
         "dataset_version_id": version_id,
@@ -230,6 +248,11 @@ def train_type_model(
         ],
     }
     metadata_path.write_text(json.dumps(metadata_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if cancel_check is not None and cancel_check():
+        for path in (model_path, metadata_path):
+            if path.exists():
+                path.unlink()
+        raise TrainingCancelled("训练已停止：模型文件写入后收到取消请求，当前产物已丢弃。")
 
     model_record = TrainedModelRecord(
         model_id=model_id,
@@ -323,6 +346,15 @@ def _emit_train_progress(
     if progress_callback is None:
         return
     progress_callback(stage_text, log_text)
+
+
+def _raise_if_cancelled(cancel_check: Callable[[], bool] | None, message: str) -> None:
+    """在训练关键阶段检查是否已收到取消请求。"""
+
+    if cancel_check is None:
+        return
+    if cancel_check():
+        raise TrainingCancelled(message)
 
 
 def _format_max_depth(max_depth: int | None) -> str:

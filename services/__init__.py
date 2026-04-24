@@ -22,6 +22,7 @@ from services.database import (
 )
 from services.model_service import (
     ModelServiceError,
+    TrainingCancelled,
     extract_iq_features,
     load_trained_model,
     predict_type_sample,
@@ -74,6 +75,7 @@ __all__ = [
     "resolve_default_model_weights_path",
     "run_preprocess",
     "save_preprocess_result",
+    "TrainingCancelled",
     "train_type_model",
     "update_sample_label",
     "upsert_samples",

@@ -1028,7 +1028,9 @@ class DatasetPage(QWidget):
         self._refresh_history_table()
         self._refresh_dataset_generation_controls(update_status=False)
         self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
-        self.dataset_build_status_label.setText(f"已删除数据集版本：{version_id}。关联模型记录已同步移除，样本记录未删除。")
+        self.dataset_build_status_label.setText(
+            f"已删除数据集版本：{version_id}。关联模型记录已保留，可继续用于识别；样本记录未删除。"
+        )
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _clear_processed_dataset_database(self) -> None:

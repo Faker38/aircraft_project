@@ -116,8 +116,7 @@ def init_database() -> None:
                 artifact_path TEXT NOT NULL,
                 metrics_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL DEFAULT '训练完成',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(dataset_version_id) REFERENCES dataset_versions(version_id)
+                created_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_samples_status ON samples(status);
@@ -127,6 +126,7 @@ def init_database() -> None:
             """
         )
         _ensure_column(conn, "dataset_items", "split", "TEXT NOT NULL DEFAULT 'train'")
+        _migrate_trained_models_to_weak_version_reference(conn)
         conn.execute("UPDATE samples SET status = '待标注' WHERE status = '待复核'")
 
 
@@ -259,7 +259,6 @@ def delete_dataset_version(version_id: str) -> None:
     init_database()
     with _connect() as conn:
         # 版本删除只移除版本和关联关系，样本本身继续保留。
-        conn.execute("DELETE FROM trained_models WHERE dataset_version_id = ?", (version_id,))
         conn.execute("DELETE FROM dataset_items WHERE version_id = ?", (version_id,))
         conn.execute("DELETE FROM dataset_versions WHERE version_id = ?", (version_id,))
 
@@ -734,3 +733,42 @@ def _normalize_sample_status(status: str) -> str:
     if status == "待复核":
         return "待标注"
     return "待标注"
+
+
+def _migrate_trained_models_to_weak_version_reference(conn: sqlite3.Connection) -> None:
+    """把 trained_models 从强外键升级为弱版本引用。"""
+
+    foreign_keys = conn.execute("PRAGMA foreign_key_list(trained_models)").fetchall()
+    if not any(row[2] == "dataset_versions" for row in foreign_keys):
+        return
+
+    conn.executescript(
+        """
+        ALTER TABLE trained_models RENAME TO trained_models_old;
+
+        CREATE TABLE trained_models (
+            model_id TEXT PRIMARY KEY,
+            dataset_version_id TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            model_kind TEXT NOT NULL,
+            label_space_json TEXT NOT NULL DEFAULT '[]',
+            artifact_path TEXT NOT NULL,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT '训练完成',
+            created_at TEXT NOT NULL
+        );
+
+        INSERT INTO trained_models (
+            model_id, dataset_version_id, task_type, model_kind,
+            label_space_json, artifact_path, metrics_json, status, created_at
+        )
+        SELECT
+            model_id, dataset_version_id, task_type, model_kind,
+            label_space_json, artifact_path, metrics_json, status, created_at
+        FROM trained_models_old;
+
+        DROP TABLE trained_models_old;
+
+        CREATE INDEX IF NOT EXISTS idx_trained_models_dataset_version ON trained_models(dataset_version_id);
+        """
+    )

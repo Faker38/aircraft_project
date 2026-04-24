@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from threading import Event
+
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services import ModelServiceError, TrainingRunResult, train_type_model
+from services import ModelServiceError, TrainingCancelled, TrainingRunResult, train_type_model
 
 
 class TrainRunWorker(QObject):
@@ -12,6 +14,7 @@ class TrainRunWorker(QObject):
 
     started = Signal(str)
     progress_changed = Signal(str, str)
+    cancelled = Signal(str)
     finished = Signal(object)
     failed = Signal(str)
 
@@ -32,6 +35,12 @@ class TrainRunWorker(QObject):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.random_state = random_state
+        self._cancel_event = Event()
+
+    def request_cancel(self) -> None:
+        """请求当前训练任务在安全检查点停止。"""
+
+        self._cancel_event.set()
 
     @Slot()
     def run(self) -> None:
@@ -46,7 +55,11 @@ class TrainRunWorker(QObject):
                 max_depth=self.max_depth,
                 random_state=self.random_state,
                 progress_callback=self.progress_changed.emit,
+                cancel_check=self._cancel_event.is_set,
             )
+        except TrainingCancelled as exc:
+            self.cancelled.emit(str(exc))
+            return
         except ModelServiceError as exc:
             self.failed.emit(str(exc))
             return
