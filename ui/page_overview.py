@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, VisualHeroCard
 
 
 class OverviewPage(QWidget):
@@ -37,6 +37,7 @@ class OverviewPage(QWidget):
         content_layout.setContentsMargins(6, 6, 6, 6)
         content_layout.setSpacing(16)
 
+        content_layout.addWidget(self._build_visual_banner())
         content_layout.addWidget(self._build_summary_section())
         content_layout.addWidget(self._build_workflow_section())
         content_layout.addWidget(self._build_metrics_section())
@@ -46,6 +47,18 @@ class OverviewPage(QWidget):
         root_layout.addWidget(scroll_area)
 
         self._refresh_device_state()
+
+    def _build_visual_banner(self) -> VisualHeroCard:
+        """Create a restrained visual banner for the overview page."""
+
+        return VisualHeroCard(
+            "工程总览 · 当前流程基线",
+            "界面围绕采集、预处理、数据集、训练与识别五个步骤组织，当前强调流程闭环、结果可追溯和演示稳定性。",
+            background_name="overview_header_bg.svg",
+            chips=["五步主流程", "结果可追溯", "演示链路已打通"],
+            ornament_name="decor_signal_corner_a.svg",
+            height=176,
+        )
 
     def _build_summary_section(self) -> SectionCard:
         """Create the overview summary section."""

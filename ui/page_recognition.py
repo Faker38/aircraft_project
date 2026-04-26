@@ -25,7 +25,7 @@ from services import (
     get_dataset_version_detail,
     predict_type_sample,
 )
-from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
+from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, VisualHeroCard, configure_scrollable
 
 
 class RecognitionPage(QWidget):
@@ -48,6 +48,7 @@ class RecognitionPage(QWidget):
         content_layout.setContentsMargins(6, 6, 6, 6)
         content_layout.setSpacing(16)
 
+        content_layout.addWidget(self._build_visual_banner())
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
         self.type_model_metric = MetricCard("类型识别模型", "未生成", compact=True)
@@ -84,6 +85,18 @@ class RecognitionPage(QWidget):
 
         # 个体识别当前仍是演示模式，这里先填入一个固定说明项，避免下拉框为空。
         self._refresh_model_selector("individual")
+
+    def _build_visual_banner(self) -> VisualHeroCard:
+        """Create the recognition-page visual banner."""
+
+        return VisualHeroCard(
+            "无人机识别 · 实时判别视图",
+            "当前类型识别页直接读取训练页输出的真实模型进行推理；个体指纹识别仍保持演示模式，避免超出演示主线。",
+            background_name="recognition_header_bg.svg",
+            chips=["真实模型推理", "标签空间校验", "结果可追溯"],
+            ornament_name="decor_lock_target_c.svg",
+            height=170,
+        )
 
     def set_sample_records(self, records: list[SampleRecord]) -> None:
         """刷新识别页的样本列表。"""

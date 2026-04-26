@@ -40,7 +40,15 @@ from services import (
 )
 from ui.model_eval_worker import ModelEvalWorker
 from ui.train_run_worker import TrainRunWorker
-from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
+from ui.widgets import (
+    MetricCard,
+    SectionCard,
+    SmoothScrollArea,
+    StatusBadge,
+    VisualHeroCard,
+    VisualInfoStrip,
+    configure_scrollable,
+)
 
 
 class TrainPage(QWidget):
@@ -70,6 +78,7 @@ class TrainPage(QWidget):
         content_layout.setContentsMargins(6, 6, 6, 6)
         content_layout.setSpacing(16)
 
+        content_layout.addWidget(self._build_visual_banner())
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
         self.val_accuracy_metric = MetricCard("验证精度", "-", compact=True)
@@ -97,6 +106,18 @@ class TrainPage(QWidget):
 
         self._refresh_trained_model_list_from_database()
         self.delete_model_button.setEnabled(bool(self.trained_models))
+
+    def _build_visual_banner(self) -> VisualHeroCard:
+        """Create the training-page visual banner."""
+
+        return VisualHeroCard(
+            "模型训练 · 可复现实验",
+            "当前以 RandomForest 类型识别训练为主，强调版本固定、参数透明和结果可复现；训练页同时提供批量模型测试入口。",
+            background_name="train_header_bg.svg",
+            chips=["RandomForest", "可复现实验", "批量模型测试"],
+            ornament_name="decor_data_panel_b.svg",
+            height=170,
+        )
 
     def get_trained_models(self) -> list[TrainedModelRecord]:
         """返回当前可供识别页消费的训练模型记录。"""
@@ -391,6 +412,14 @@ class TrainPage(QWidget):
         self.export_result_table.setAlternatingRowColors(True)
         configure_scrollable(self.export_result_table)
 
+        section.body_layout.addWidget(
+            VisualInfoStrip(
+                "当前模型库",
+                "真实训练完成后会生成 model.joblib 与 metadata.json。即使没有选中模型，也可以通过上方模型列表切换查看当前成果物。",
+                illustration_name="empty_no_model.svg",
+                ornament_name="decor_data_panel_b.svg",
+            )
+        )
         section.body_layout.addLayout(status_row)
         section.body_layout.addWidget(self.export_result_table)
         return section

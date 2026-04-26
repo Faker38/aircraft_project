@@ -228,6 +228,42 @@ class AppStyles:
             font-size: 11pt;
             font-weight: 700;
         }}
+        QFrame#VisualHeroCard {{
+            background: transparent;
+            border: none;
+        }}
+        QLabel#HeroTitle {{
+            font-size: 14pt;
+            font-weight: 700;
+            color: {t.text};
+        }}
+        QLabel#HeroDescription {{
+            color: rgba(230, 237, 245, 0.78);
+            font-size: 9.8pt;
+        }}
+        QLabel#HeroChip {{
+            color: {t.text};
+            background-color: rgba(15, 23, 31, 0.46);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 4px 10px;
+            font-size: 8.8pt;
+            font-weight: 600;
+        }}
+        QFrame#VisualInfoStrip {{
+            background-color: rgba(255, 255, 255, 0.02);
+            border: 1px solid {t.border_soft};
+            border-radius: 12px;
+        }}
+        QLabel#VisualInfoTitle {{
+            color: {t.text};
+            font-size: 10.5pt;
+            font-weight: 700;
+        }}
+        QLabel#VisualInfoDescription {{
+            color: {t.text_muted};
+            font-size: 9.3pt;
+        }}
         QPushButton {{
             background-color: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.08);

@@ -35,7 +35,15 @@ from config import (
 )
 from services import USRPCaptureConfig, USRPCaptureResult, save_raw_capture_record
 from ui.usrp_capture_worker import USRPCaptureWorker
-from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
+from ui.widgets import (
+    MetricCard,
+    SectionCard,
+    SmoothScrollArea,
+    StatusBadge,
+    VisualHeroCard,
+    VisualInfoStrip,
+    configure_scrollable,
+)
 
 
 class CapturePage(QWidget):
@@ -64,6 +72,7 @@ class CapturePage(QWidget):
         self.content_layout.setContentsMargins(6, 6, 6, 6)
         self.content_layout.setSpacing(16)
 
+        self.content_layout.addWidget(self._build_visual_banner())
         self.content_layout.addLayout(self._build_summary_row())
 
         top_row = QHBoxLayout()
@@ -88,6 +97,18 @@ class CapturePage(QWidget):
         self._update_usrp_command_preview()
         self._refresh_summary_metrics()
         self._apply_mode_change()
+
+    def _build_visual_banner(self) -> VisualHeroCard:
+        """Create the capture-page visual banner."""
+
+        return VisualHeroCard(
+            "数据采集 · 双模式接入",
+            "保留 3943B 演示链路，同时新增 USRP 真实采集 V1。当前优先保证原始文件登记、采集日志和后续处理可衔接。",
+            background_name="capture_header_bg.svg",
+            chips=["3943B 演示", "USRP 真实采集", "原始 IQ 文件登记"],
+            ornament_name="decor_signal_corner_a.svg",
+            height=170,
+        )
 
     def _build_summary_row(self) -> QHBoxLayout:
         """Create the compact summary row."""
@@ -422,6 +443,14 @@ class CapturePage(QWidget):
         self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         configure_scrollable(self.files_table)
 
+        section.body_layout.addWidget(
+            VisualInfoStrip(
+                "原始记录管理",
+                "USRP 采集 V1 会产出 IQ 原始文件和元数据 JSON；3943B 演示模式继续保留 CAP 记录，用于联调和展示。",
+                illustration_name="empty_no_capture.svg",
+                ornament_name="decor_signal_corner_a.svg",
+            )
+        )
         section.body_layout.addWidget(self.files_table)
         return section
 
