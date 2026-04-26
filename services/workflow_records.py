@@ -188,3 +188,20 @@ class PredictionResult:
     predicted_label: str
     confidence: float
     probabilities: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelEvaluationResult:
+    """训练页中一次批量模型测试的统一结果。"""
+
+    model_record: TrainedModelRecord
+    manifest_csv_path: str
+    report_path: str
+    metrics_csv_path: str
+    sample_count: int
+    accuracy: float
+    macro_f1: float
+    confusion_matrix: list[list[int]] = field(default_factory=list)
+    metric_rows: list[TrainingMetricRow] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
+    label_space: list[str] = field(default_factory=list)

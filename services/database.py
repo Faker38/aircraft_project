@@ -203,6 +203,27 @@ def upsert_samples(records: list[SampleRecord]) -> None:
             )
 
 
+def save_raw_capture_record(
+    *,
+    file_path: str,
+    sample_rate_hz: float,
+    center_frequency_hz: float,
+    bandwidth_hz: float,
+) -> None:
+    """登记一条原始采集文件记录。"""
+
+    init_database()
+    with _connect() as conn:
+        _upsert_raw_file(
+            conn,
+            file_path=file_path,
+            sample_rate_hz=sample_rate_hz,
+            center_frequency_hz=center_frequency_hz,
+            bandwidth_hz=bandwidth_hz,
+            now=_now_text(),
+        )
+
+
 def list_samples() -> list[SampleRecord]:
     """读取全部样本记录。"""
 

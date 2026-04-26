@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         device_row.setSpacing(8)
         device_label = QLabel("设备状态")
         device_label.setObjectName("FieldLabel")
-        self.global_connection_badge = StatusBadge("3943B 未接入", "danger", size="sm")
+        self.global_connection_badge = StatusBadge("设备未接入", "danger", size="sm")
         device_row.addWidget(device_label)
         device_row.addStretch(1)
         device_row.addWidget(self.global_connection_badge, 0, Qt.AlignmentFlag.AlignRight)
@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
 
         device_label = QLabel("设备状态")
         device_label.setObjectName("HeaderMetaLabel")
-        self.header_device_badge = StatusBadge("3943B 未接入", "danger", size="sm")
+        self.header_device_badge = StatusBadge("设备未接入", "danger", size="sm")
 
         clock_title = QLabel("系统时钟")
         clock_title.setObjectName("HeaderMetaLabel")
@@ -268,15 +268,15 @@ class MainWindow(QMainWindow):
         self.page_description_label.setText(description)
         self.statusBar().showMessage(f"当前页面：{title}")
 
-    def _update_connection_badge(self, connected: bool) -> None:
+    def _update_connection_badge(self, connected: bool, device_text: str) -> None:
         """Update shared device status widgets from the capture page."""
 
         if connected:
-            self.global_connection_badge.set_status("3943B 已接入", "success")
-            self.header_device_badge.set_status("3943B 已接入", "success")
+            self.global_connection_badge.set_status(device_text, "success")
+            self.header_device_badge.set_status(device_text, "success")
         else:
-            self.global_connection_badge.set_status("3943B 未接入", "danger")
-            self.header_device_badge.set_status("3943B 未接入", "danger")
+            self.global_connection_badge.set_status(device_text, "danger")
+            self.header_device_badge.set_status(device_text, "danger")
 
         overview_page = self.pages.get("overview")
         if isinstance(overview_page, OverviewPage):

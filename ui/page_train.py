@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -28,6 +30,7 @@ from config import EXPORTS_DIR
 from services import (
     DatasetVersionDetail,
     DatasetVersionRecord,
+    ModelEvaluationResult,
     TrainedModelRecord,
     TrainingMetricRow,
     TrainingRunResult,
@@ -35,6 +38,7 @@ from services import (
     get_dataset_version_detail,
     list_trained_models,
 )
+from ui.model_eval_worker import ModelEvalWorker
 from ui.train_run_worker import TrainRunWorker
 from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, configure_scrollable
 
@@ -52,6 +56,8 @@ class TrainPage(QWidget):
         self.trained_models: list[TrainedModelRecord] = list_trained_models()
         self._train_thread: QThread | None = None
         self._train_worker: TrainRunWorker | None = None
+        self._eval_thread: QThread | None = None
+        self._eval_worker: ModelEvalWorker | None = None
         self._stop_requested = False
 
         root_layout = QVBoxLayout(self)
@@ -83,6 +89,7 @@ class TrainPage(QWidget):
         lower_row.addWidget(self._build_results_card(), 3)
         lower_row.addWidget(self._build_export_workspace(), 2)
         content_layout.addLayout(lower_row)
+        content_layout.addWidget(self._build_model_test_card())
         content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -388,6 +395,95 @@ class TrainPage(QWidget):
         section.body_layout.addWidget(self.export_result_table)
         return section
 
+    def _build_model_test_card(self) -> SectionCard:
+        """创建训练页内的模型测试工作区。"""
+
+        self.eval_status_badge = StatusBadge("待测试", "info", size="sm")
+        section = SectionCard(
+            "模型测试",
+            "导入外部带标签测试集 CSV，对当前类型识别模型执行批量评估。",
+            right_widget=self.eval_status_badge,
+            compact=True,
+        )
+
+        control_layout = QFormLayout()
+        control_layout.setHorizontalSpacing(12)
+        control_layout.setVerticalSpacing(12)
+
+        self.eval_model_box = QComboBox()
+
+        csv_row = QHBoxLayout()
+        csv_row.setSpacing(10)
+        self.eval_manifest_input = QLineEdit()
+        self.eval_manifest_input.setPlaceholderText("选择带标签测试集 CSV（sample_id,sample_file_path,label_type）")
+        browse_button = QPushButton("选择 CSV")
+        browse_button.clicked.connect(self._choose_evaluation_manifest)
+        csv_row.addWidget(self.eval_manifest_input, 1)
+        csv_row.addWidget(browse_button)
+
+        self.eval_progress = QProgressBar()
+        self.eval_progress.setRange(0, 100)
+        self.eval_progress.setValue(0)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self.eval_start_button = QPushButton("开始测试")
+        self.eval_start_button.setObjectName("PrimaryButton")
+        self.eval_start_button.clicked.connect(self._start_model_evaluation)
+        action_row.addWidget(self.eval_start_button)
+        action_row.addStretch(1)
+
+        hint_label = QLabel("CSV 固定字段：sample_id、sample_file_path、label_type。样本文件格式固定为当前训练链路使用的 .npy IQ 样本。")
+        hint_label.setObjectName("MutedText")
+        hint_label.setWordWrap(True)
+
+        control_layout.addRow("测试模型", self.eval_model_box)
+        control_layout.addRow("测试清单", csv_row)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(12)
+        self.eval_count_metric = MetricCard("测试样本", "0", compact=True)
+        self.eval_accuracy_metric = MetricCard("测试准确率", "-", accent_color="#7CB98B", compact=True)
+        self.eval_f1_metric = MetricCard("测试宏平均 F1", "-", accent_color="#C59A63", compact=True)
+        self.eval_output_metric = MetricCard("测试报告", "-", accent_color="#6CA5D9", compact=True)
+        metrics_row.addWidget(self.eval_count_metric)
+        metrics_row.addWidget(self.eval_accuracy_metric)
+        metrics_row.addWidget(self.eval_f1_metric)
+        metrics_row.addWidget(self.eval_output_metric)
+
+        self.eval_log = QPlainTextEdit()
+        self.eval_log.setReadOnly(True)
+        self.eval_log.setPlainText("当前还没有执行批量模型测试。")
+        self.eval_log.setMinimumHeight(180)
+        configure_scrollable(self.eval_log)
+
+        self.eval_confusion_output = QPlainTextEdit()
+        self.eval_confusion_output.setReadOnly(True)
+        self.eval_confusion_output.setPlainText("测试完成后，这里会显示混淆矩阵与报告输出路径。")
+        self.eval_confusion_output.setMinimumHeight(180)
+        configure_scrollable(self.eval_confusion_output)
+
+        output_row = QHBoxLayout()
+        output_row.setSpacing(12)
+        output_row.addWidget(self.eval_log, 1)
+        output_row.addWidget(self.eval_confusion_output, 1)
+
+        self.eval_detail_table = QTableWidget(0, 5)
+        self.eval_detail_table.setHorizontalHeaderLabels(["类别", "精确率", "召回率", "F1", "样本数"])
+        self.eval_detail_table.horizontalHeader().setStretchLastSection(True)
+        self.eval_detail_table.verticalHeader().setVisible(False)
+        self.eval_detail_table.setAlternatingRowColors(True)
+        configure_scrollable(self.eval_detail_table)
+
+        section.body_layout.addLayout(control_layout)
+        section.body_layout.addWidget(self.eval_progress)
+        section.body_layout.addLayout(action_row)
+        section.body_layout.addWidget(hint_label)
+        section.body_layout.addLayout(metrics_row)
+        section.body_layout.addLayout(output_row)
+        section.body_layout.addWidget(self.eval_detail_table)
+        return section
+
     def _start_training(self) -> None:
         """启动真实训练任务。"""
 
@@ -441,6 +537,55 @@ class TrainPage(QWidget):
         self._train_worker = worker
         self._stop_requested = False
         self._set_running_state(True)
+        thread.start()
+
+    def _choose_evaluation_manifest(self) -> None:
+        """选择一个外部测试集 CSV 清单。"""
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择模型测试清单",
+            str(Path.cwd()),
+            "CSV 文件 (*.csv)",
+        )
+        if file_path:
+            self.eval_manifest_input.setText(file_path)
+
+    def _start_model_evaluation(self) -> None:
+        """启动一次批量模型测试任务。"""
+
+        if self._eval_thread is not None:
+            return
+
+        record = self.eval_model_box.currentData()
+        if not isinstance(record, TrainedModelRecord):
+            self.eval_status_badge.set_status("待模型", "warning", size="sm")
+            self.eval_log.setPlainText("请先在训练页生成或选择一个真实类型识别模型。")
+            return
+
+        manifest_csv_path = self.eval_manifest_input.text().strip()
+        if not manifest_csv_path:
+            self.eval_status_badge.set_status("待清单", "warning", size="sm")
+            self.eval_log.setPlainText("请先选择外部测试集 CSV 清单。")
+            return
+
+        thread = QThread(self)
+        worker = ModelEvalWorker(model_id=record.model_id, manifest_csv_path=manifest_csv_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.started.connect(self._on_eval_started)
+        worker.progress_changed.connect(self._on_eval_progress)
+        worker.finished.connect(self._on_eval_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(self._on_eval_failed)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_eval_worker)
+
+        self._eval_thread = thread
+        self._eval_worker = worker
+        self._set_eval_running_state(True)
         thread.start()
 
     def _request_stop_training(self) -> None:
@@ -542,6 +687,61 @@ class TrainPage(QWidget):
         self.training_log.setPlainText(message)
         self.confusion_placeholder.setPlainText("训练未完成，请先修正数据集或模型配置后重试。")
 
+    def _on_eval_started(self, model_id: str) -> None:
+        """在模型测试真正开始时刷新状态。"""
+
+        self.eval_status_badge.set_status("测试中", "warning", size="sm")
+        self.eval_progress.setValue(0)
+        self.eval_count_metric.set_value("0")
+        self.eval_accuracy_metric.set_value("-")
+        self.eval_f1_metric.set_value("-")
+        self.eval_output_metric.set_value("-")
+        self.eval_detail_table.setRowCount(0)
+        self.eval_log.setPlainText(
+            "\n".join(
+                [
+                    f"开始测试类型识别模型 | 模型 {model_id}",
+                    f"测试清单：{self.eval_manifest_input.text().strip()}",
+                ]
+            )
+        )
+        self.eval_confusion_output.setPlainText(
+            "模型测试执行中。\n\n"
+            "当前会逐条读取外部带标签测试样本，复用真实特征提取与真实模型推理能力完成批量评估。"
+        )
+
+    def _on_eval_progress(self, percent: int, stage_text: str, log_text: str) -> None:
+        """渲染模型测试阶段进度。"""
+
+        self.eval_status_badge.set_status(stage_text, "warning", size="sm")
+        self.eval_progress.setValue(percent)
+        current_text = self.eval_log.toPlainText()
+        if current_text.endswith(log_text):
+            return
+        self.eval_log.appendPlainText(log_text)
+
+    def _on_eval_finished(self, result: ModelEvaluationResult) -> None:
+        """渲染一次批量模型测试结果。"""
+
+        self._set_eval_running_state(False)
+        self.eval_status_badge.set_status("测试完成", "success", size="sm")
+        self.eval_progress.setValue(100)
+        self.eval_count_metric.set_value(str(result.sample_count))
+        self.eval_accuracy_metric.set_value(f"{result.accuracy * 100:.1f}%")
+        self.eval_f1_metric.set_value(f"{result.macro_f1:.3f}")
+        self.eval_output_metric.set_value(Path(result.report_path).name)
+        self.eval_log.setPlainText("\n".join(result.logs))
+        self.eval_confusion_output.setPlainText(self._build_evaluation_summary(result))
+        self._refresh_evaluation_detail_table(result.metric_rows)
+
+    def _on_eval_failed(self, message: str) -> None:
+        """渲染模型测试失败结果。"""
+
+        self._set_eval_running_state(False)
+        self.eval_status_badge.set_status("测试失败", "danger", size="sm")
+        self.eval_log.setPlainText(message)
+        self.eval_confusion_output.setPlainText("模型测试未完成，请先修正外部测试清单或模型状态后重试。")
+
     def _run_dataset_check(self) -> None:
         """执行训练前的数据集检查。"""
 
@@ -633,6 +833,39 @@ class TrainPage(QWidget):
         )
         return "\n".join(summary_lines)
 
+    def _build_evaluation_summary(self, result: ModelEvaluationResult) -> str:
+        """构建一次批量模型测试的摘要文本。"""
+
+        summary_lines = [
+            f"测试模型：{result.model_record.model_id}",
+            f"来源版本：{result.model_record.dataset_version_id}",
+            f"测试清单：{result.manifest_csv_path}",
+            f"测试样本数：{result.sample_count}",
+            f"正确率：{result.accuracy * 100:.2f}%",
+            f"宏平均 F1：{result.macro_f1:.4f}",
+            f"报告文件：{result.report_path}",
+            f"指标文件：{result.metrics_csv_path}",
+            "",
+            "混淆矩阵：",
+        ]
+
+        labels = [row.label for row in result.metric_rows]
+        if not labels or not result.confusion_matrix:
+            summary_lines.append("当前没有可展示的混淆矩阵。")
+            return "\n".join(summary_lines)
+
+        header = "True\\Pred".ljust(18)
+        for label in labels:
+            header += self._display_label(label)[:14].ljust(16)
+        summary_lines.append(header)
+
+        for row_label, row_values in zip(labels, result.confusion_matrix):
+            line = self._display_label(row_label)[:14].ljust(18)
+            for value in row_values:
+                line += str(value).ljust(16)
+            summary_lines.append(line)
+        return "\n".join(summary_lines)
+
     def _refresh_detail_table(self, metric_rows: list[TrainingMetricRow]) -> None:
         """刷新类别指标表。"""
 
@@ -652,6 +885,25 @@ class TrainPage(QWidget):
                     self.detail_table.setItem(row_index, column, item)
                 item.setText(value)
 
+    def _refresh_evaluation_detail_table(self, metric_rows: list[TrainingMetricRow]) -> None:
+        """刷新模型测试的类别指标表。"""
+
+        self.eval_detail_table.setRowCount(len(metric_rows))
+        for row_index, row in enumerate(metric_rows):
+            values = [
+                self._display_label(row.label),
+                f"{row.precision:.3f}",
+                f"{row.recall:.3f}",
+                f"{row.f1:.3f}",
+                str(row.support),
+            ]
+            for column, value in enumerate(values):
+                item = self.eval_detail_table.item(row_index, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.eval_detail_table.setItem(row_index, column, item)
+                item.setText(value)
+
     def _refresh_trained_model_list_from_database(self, preferred_model_id: str | None = None) -> None:
         """从数据库刷新训练模型列表，并同步给识别页。"""
 
@@ -660,13 +912,19 @@ class TrainPage(QWidget):
 
         self.export_model_box.blockSignals(True)
         self.export_model_box.clear()
+        self.eval_model_box.blockSignals(True)
+        self.eval_model_box.clear()
         for record in self.trained_models:
             display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}"
             self.export_model_box.addItem(display_text, record)
+            self.eval_model_box.addItem(display_text, record)
         self.export_model_box.blockSignals(False)
+        self.eval_model_box.blockSignals(False)
 
         if not self.trained_models:
             self._update_export_details(-1)
+            self.eval_status_badge.set_status("待模型", "info", size="sm")
+            self.eval_start_button.setEnabled(False)
             return
 
         target_index = 0
@@ -677,6 +935,8 @@ class TrainPage(QWidget):
                     target_index = index
                     break
         self.export_model_box.setCurrentIndex(target_index)
+        self.eval_model_box.setCurrentIndex(target_index)
+        self.eval_start_button.setEnabled(self._eval_thread is None)
         self._update_export_details(target_index)
 
     def _update_export_details(self, index: int) -> None:
@@ -876,6 +1136,17 @@ class TrainPage(QWidget):
         self.random_state_spin.setEnabled(not running)
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running and not self._stop_requested)
+        self.eval_model_box.setEnabled(not running and self._eval_thread is None)
+        self.eval_manifest_input.setEnabled(not running and self._eval_thread is None)
+        self.eval_start_button.setEnabled((not running) and self._eval_thread is None and bool(self.trained_models))
+
+    def _set_eval_running_state(self, running: bool) -> None:
+        """根据模型测试状态统一启用或禁用测试控件。"""
+
+        self.eval_model_box.setEnabled(not running and not self._is_running())
+        self.eval_manifest_input.setEnabled(not running and not self._is_running())
+        self.eval_start_button.setEnabled((not running) and not self._is_running() and bool(self.trained_models))
+        self.start_button.setEnabled((not running) and not self._is_running())
 
     def _is_running(self) -> bool:
         """返回当前是否存在正在执行的训练任务。"""
@@ -887,6 +1158,13 @@ class TrainPage(QWidget):
 
         self._train_thread = None
         self._train_worker = None
+
+    def _clear_eval_worker(self) -> None:
+        """在线程退出后清理模型测试 worker 引用。"""
+
+        self._eval_thread = None
+        self._eval_worker = None
+        self.eval_start_button.setEnabled(bool(self.trained_models) and not self._is_running())
 
     def _display_label(self, label: str) -> str:
         """把标签转换为适合界面展示的文本。"""

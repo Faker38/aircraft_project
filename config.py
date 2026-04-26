@@ -16,6 +16,7 @@ SAMPLES_DIR: Path = DATA_DIR / "samples"
 FEATURES_DIR: Path = DATA_DIR / "features"
 DATASETS_DIR: Path = DATA_DIR / "datasets"
 MODELS_DIR: Path = DATA_DIR / "models"
+EVALUATIONS_DIR: Path = DATA_DIR / "evaluations"
 EXPORTS_DIR: Path = DATA_DIR / "exports"
 RESOURCES_DIR: Path = BASE_DIR / "resources"
 ICONS_DIR: Path = RESOURCES_DIR / "icons"
@@ -26,6 +27,8 @@ PREPROCESS_MODEL_PATH: Path = PREPROCESS_MODELS_DIR / "best_model_1_detect_v2.pt
 
 DEFAULT_DEVICE_IP: str = "192.168.1.100"
 DEFAULT_DEVICE_PORT: int = 5025
+DEFAULT_USRP_EXECUTABLE: str = "rx_samples_to_file"
+DEFAULT_USRP_DEVICE_ARGS: str = ""
 
 
 def ensure_project_dirs() -> None:
@@ -38,6 +41,7 @@ def ensure_project_dirs() -> None:
         FEATURES_DIR,
         DATASETS_DIR,
         MODELS_DIR,
+        EVALUATIONS_DIR,
         EXPORTS_DIR,
         ICONS_DIR,
         PREPROCESS_MODELS_DIR,
