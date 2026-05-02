@@ -136,7 +136,9 @@ class DatasetPage(QWidget):
     def add_preprocess_records(self, records: list[SampleRecord]) -> None:
         """Append or update preprocess-generated sample records."""
 
-        preprocess_records = [record for record in records if record.source_type == "local_preprocess"]
+        preprocess_records = [
+            record for record in records if record.source_type in {"local_preprocess", "usrp_preprocess"}
+        ]
         if not preprocess_records:
             return
 
@@ -148,7 +150,7 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self.annotation_status_label.setText(
-            f"已同步 {len(preprocess_records)} 条预处理候选样本，请继续完成手动标注。"
+            f"已同步 {len(preprocess_records)} 条预处理候选样本，请继续完成或确认标注。"
         )
         self._refresh_dataset_generation_controls()
         self.sample_records_updated.emit(self.get_sample_records())

@@ -145,6 +145,16 @@ class DatasetBuildWorker(QObject):
                 self.failed.emit("当前没有可用的已标注样本，无法生成数据集版本。")
                 return
 
+            selected_sample_id_set = set(selected_sample_ids)
+            selected_records = [record for record in self.sample_records if record.sample_id in selected_sample_id_set]
+            source_types = {record.source_type for record in selected_records}
+            if source_types == {"usrp_preprocess"}:
+                source_summary = "USRP演示样本"
+            elif "usrp_preprocess" in source_types:
+                source_summary = "混合预处理样本"
+            else:
+                source_summary = "预处理样本"
+
             split_values = build_split_values(
                 sample_labels,
                 train_ratio=self.train_ratio,
@@ -159,7 +169,7 @@ class DatasetBuildWorker(QObject):
                 sample_count=sum(label_counts.values()),
                 strategy=self.strategy,
                 created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                source_summary="预处理样本",
+                source_summary=source_summary,
                 label_counts=label_counts,
             )
             self.progress_changed.emit(sample_total, max(sample_total, 1), "正在写入数据库")

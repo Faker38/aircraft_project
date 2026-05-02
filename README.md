@@ -81,6 +81,7 @@ CAP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> man
 - 当前南京 demo 主线优先按本地 Windows CPU 跑通，GPU 不是本轮关键路径
 - USRP B210 已按 UHD Windows 默认安装目录做自动命令定位；安装器 PATH 写入失败时仍可使用软件采集入口
 - 当前 B210 演示默认使用已验通的 USB2 保守档：`1 Msps / 2 s / 2.4 GHz / 20 dB / RX2`
+- 信号预处理页新增 `USRP IQ 演示预处理`，可将 B210 `.iq + .json` 切片成 `.npy` 样本并衔接标注、训练和识别
 - `qt-material` 未安装时，程序会自动回退到内置样式
 
 ## 目录结构

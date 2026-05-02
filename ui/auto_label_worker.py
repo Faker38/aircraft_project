@@ -30,16 +30,26 @@ def build_auto_labeled_records(
 
     for index, record in enumerate(sample_records, start=1):
         new_record = record
-        mapping = mapping_lookup.get(record.device_id) if record.source_type == "local_preprocess" else None
+        mapping = (
+            mapping_lookup.get(record.device_id)
+            if record.source_type in {"local_preprocess", "usrp_preprocess"}
+            else None
+        )
 
         if mapping is None:
-            new_record = replace(
-                record,
-                label_type="",
-                label_individual="",
-                status="待标注",
-            )
-            pending += 1
+            if record.source_type == "usrp_preprocess" and record.label_type:
+                if record.status == "已标注":
+                    matched += 1
+                else:
+                    pending += 1
+            else:
+                new_record = replace(
+                    record,
+                    label_type="",
+                    label_individual="",
+                    status="待标注",
+                )
+                pending += 1
         elif individual_mode:
             mapped_individual = mapping.get("individual", "").strip()
             mapped_status = "已标注" if mapped_individual else "待标注"

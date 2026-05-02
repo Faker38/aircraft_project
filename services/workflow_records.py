@@ -47,6 +47,7 @@ class SampleRecord:
 
         return {
             "local_preprocess": "预处理输出",
+            "usrp_preprocess": "USRP 预处理输出",
         }.get(self.source_type, "未知来源")
 
 

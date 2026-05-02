@@ -101,7 +101,9 @@ class RecognitionPage(QWidget):
     def set_sample_records(self, records: list[SampleRecord]) -> None:
         """刷新识别页的样本列表。"""
 
-        self.sample_records = [record for record in records if record.source_type == "local_preprocess"]
+        self.sample_records = [
+            record for record in records if record.source_type in {"local_preprocess", "usrp_preprocess"}
+        ]
         for mode_key in self.mode_controls:
             self._refresh_sample_selector(mode_key)
 
