@@ -198,7 +198,15 @@ class DatasetPage(QWidget):
             compact=True,
         )
 
-        self.mapping_table = QTableWidget(3, 4)
+        mapping_rows = [
+            ["usrp_2412M", "频点A", "", "USRP 演示频点 2412 MHz"],
+            ["usrp_2437M", "频点B", "", "USRP 演示频点 2437 MHz"],
+            ["usrp_2462M", "频点C", "", "USRP 演示频点 2462 MHz"],
+            ["batch_001", "类别A", "类别A_001", "第一批演示样本"],
+            ["batch_002", "类别B", "类别B_001", "第二批演示样本"],
+            ["batch_003", "类别C", "类别C_001", "第三批演示样本"],
+        ]
+        self.mapping_table = QTableWidget(len(mapping_rows), 4)
         self.mapping_table.setHorizontalHeaderLabels(["设备编号", "类型标签", "个体标签", "备注"])
         self.mapping_table.horizontalHeader().setStretchLastSection(True)
         self.mapping_table.verticalHeader().setVisible(False)
@@ -208,11 +216,6 @@ class DatasetPage(QWidget):
         configure_scrollable(self.mapping_table)
         self.mapping_table.itemSelectionChanged.connect(self._sync_mapping_form_from_selection)
 
-        mapping_rows = [
-            ["batch_001", "类别A", "类别A_001", "第一批演示样本"],
-            ["batch_002", "类别B", "类别B_001", "第二批演示样本"],
-            ["batch_003", "类别C", "类别C_001", "第三批演示样本"],
-        ]
         for row_index, row_data in enumerate(mapping_rows):
             for column, value in enumerate(row_data):
                 self.mapping_table.setItem(row_index, column, QTableWidgetItem(value))
@@ -226,9 +229,9 @@ class DatasetPage(QWidget):
         self.mapping_individual_input = QLineEdit()
         self.mapping_note_input = QLineEdit()
 
-        self.mapping_device_input.setPlaceholderText("例如 batch_001")
-        self.mapping_type_input.setPlaceholderText("例如 类别A")
-        self.mapping_individual_input.setPlaceholderText("例如 类别A_001")
+        self.mapping_device_input.setPlaceholderText("例如 usrp_2412M")
+        self.mapping_type_input.setPlaceholderText("例如 频点A")
+        self.mapping_individual_input.setPlaceholderText("例如 频点A_001")
         self.mapping_note_input.setPlaceholderText("可选备注")
 
         form_layout.addRow("设备编号", self.mapping_device_input)
@@ -254,7 +257,7 @@ class DatasetPage(QWidget):
         button_row.addWidget(self.mapping_delete_button)
         button_row.addStretch(1)
 
-        self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号或批次编号自动回填标签。")
+        self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号或 USRP 频点批次自动回填标签。")
         self.mapping_status_label.setObjectName("MutedText")
         self.mapping_status_label.setWordWrap(True)
 
@@ -282,7 +285,7 @@ class DatasetPage(QWidget):
         mode_row.addWidget(self.individual_radio)
         mode_row.addStretch(1)
 
-        mode_hint = QLabel("预处理输出样本建议先维护映射，再执行自动标注；只有异常样本才需要人工复核。")
+        mode_hint = QLabel("预处理输出样本建议先维护映射，再执行自动标注；人工标注用于复核和修正。")
         mode_hint.setObjectName("MutedText")
         mode_hint.setWordWrap(True)
 
@@ -314,7 +317,7 @@ class DatasetPage(QWidget):
                 "模型分数",
                 "类型标签",
                 "个体标签",
-                "纳入",
+                "纳入候选",
                 "状态",
             ]
         )
@@ -329,7 +332,7 @@ class DatasetPage(QWidget):
         review_title = QLabel("复核区")
         review_title.setObjectName("SectionTitle")
 
-        review_hint = QLabel("点击样本行后，在这里填写标签或排除样本。只有已标注且纳入数据集的样本会进入版本生成。")
+        review_hint = QLabel("点击样本行后，在这里填写标签或排除样本。只有已标注、标签非空且纳入候选的样本会进入版本生成；未标注样本即使勾选也不会进入数据集。")
         review_hint.setObjectName("MutedText")
         review_hint.setWordWrap(True)
 
@@ -347,7 +350,7 @@ class DatasetPage(QWidget):
         self.review_status_box = QComboBox()
         self.review_status_box.addItems(["待标注", "已标注", "已排除"])
         self.review_status_box.currentTextChanged.connect(self._on_review_status_changed)
-        self.review_include_checkbox = QCheckBox("纳入数据集")
+        self.review_include_checkbox = QCheckBox("纳入候选")
         self.review_include_checkbox.setChecked(True)
         self.review_include_checkbox.toggled.connect(self._on_include_toggled)
         self.review_type_input.setPlaceholderText("输入类型标签")
@@ -357,8 +360,8 @@ class DatasetPage(QWidget):
         review_layout.addRow("设备编号", self.review_device_value)
         review_layout.addRow("类型标签", self.review_type_input)
         review_layout.addRow("个体标签", self.review_individual_input)
-        review_layout.addRow("是否纳入", self.review_include_checkbox)
-        include_hint = QLabel("勾选后立即生效；标签和状态仍通过“保存复核结果”保存。")
+        review_layout.addRow("数据集候选", self.review_include_checkbox)
+        include_hint = QLabel("勾选表示标注完成后允许进入数据集；未标注样本不会被生成版本。")
         include_hint.setObjectName("MutedText")
         include_hint.setWordWrap(True)
         review_layout.addRow("", include_hint)
@@ -387,7 +390,7 @@ class DatasetPage(QWidget):
         self.auto_label_progress.setValue(0)
         self.auto_label_progress.setFormat("等待自动标注")
 
-        self.annotation_status_label = QLabel("当前模式：类型识别。自动标注仅作用于预处理输出样本。")
+        self.annotation_status_label = QLabel("当前模式：类型识别。自动标注按映射表回填；映射为空时会清空标签并标记为待标注。")
         self.annotation_status_label.setObjectName("MutedText")
         self.annotation_status_label.setWordWrap(True)
 
@@ -813,8 +816,7 @@ class DatasetPage(QWidget):
 
         mapping_lookup = self._build_mapping_lookup()
         if not mapping_lookup:
-            self.annotation_status_label.setText("请先建立至少一条编号映射，再执行自动标注。")
-            return
+            self.annotation_status_label.setText("映射表为空，正在清空所有样本标签并标记为待标注。")
 
         thread = QThread(self)
         worker = AutoLabelWorker(
@@ -842,7 +844,7 @@ class DatasetPage(QWidget):
         self.auto_label_progress.setValue(0)
         self.auto_label_progress.setFormat("自动标注 %v / %m")
         self.annotation_status_label.setText(
-            f"正在后台执行自动标注：0 / {len(self.sample_records)}。界面保持可刷新，请稍候。"
+            f"正在后台执行自动标注：0 / {len(self.sample_records)}。无映射命中的样本会被标记为待标注。"
         )
         thread.start()
 
@@ -920,7 +922,9 @@ class DatasetPage(QWidget):
         self.review_include_checkbox.setEnabled(not running and self.review_status_box.currentText() != "已排除")
         self.save_review_button.setEnabled(not running)
         self.delete_sample_button.setEnabled(not running)
-        self.generate_button.setEnabled(not running and self._split_ratio_total() == 100)
+        self.generate_button.setEnabled(
+            not running and self._split_ratio_total() == 100 and self._has_dataset_candidates_for_current_mode()
+        )
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
 
@@ -930,7 +934,7 @@ class DatasetPage(QWidget):
         return self._auto_label_thread is not None
 
     def _on_review_status_changed(self, status_text: str) -> None:
-        """根据标注状态同步“是否纳入数据集”的可操作性。"""
+        """根据标注状态同步“纳入候选”的可操作性。"""
 
         is_excluded = status_text == "已排除"
         self.review_include_checkbox.setEnabled(not is_excluded)
@@ -941,7 +945,7 @@ class DatasetPage(QWidget):
             self._persist_include_state(False)
 
     def _on_include_toggled(self, checked: bool) -> None:
-        """即时保存“是否纳入数据集”状态。"""
+        """即时保存“纳入候选”状态。"""
 
         self._persist_include_state(checked)
 
@@ -959,7 +963,7 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._refresh_dataset_generation_controls(update_status=False)
         self.annotation_status_label.setText(
-            f"样本 {self.review_sample_value.text()} 的纳入状态已更新：{'纳入数据集' if include_in_dataset else '不纳入数据集'}。"
+            f"样本 {self.review_sample_value.text()} 的候选状态已更新：{'纳入候选' if include_in_dataset else '不纳入候选'}。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
 
@@ -1280,7 +1284,9 @@ class DatasetPage(QWidget):
         label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
 
         if not label_counts:
-            self.dataset_build_status_label.setText("当前没有可用的已标注样本，无法生成数据集版本。")
+            self.dataset_build_status_label.setText(
+                "当前没有可用样本，无法生成数据集版本。请确认样本已标注、标签非空且处于纳入候选。"
+            )
             return
 
         version_id = self._next_generated_version_id()
@@ -1328,10 +1334,15 @@ class DatasetPage(QWidget):
 
         total_ratio = self._split_ratio_total()
         is_valid = total_ratio == 100
-        self.generate_button.setEnabled(is_valid and not self._is_dataset_building() and not self._is_auto_labeling())
-
         task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
         label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
+        can_generate = (
+            is_valid
+            and bool(label_counts)
+            and not self._is_dataset_building()
+            and not self._is_auto_labeling()
+        )
+        self.generate_button.setEnabled(can_generate)
         if not is_valid:
             self.result_table.setRowCount(0)
             if update_status:
@@ -1344,7 +1355,9 @@ class DatasetPage(QWidget):
         if not update_status:
             return
         if not label_counts:
-            self.dataset_build_status_label.setText("当前划分比例已满足 100%，但还没有可用的已标注样本。")
+            self.dataset_build_status_label.setText(
+                "当前划分比例已满足 100%，但还没有可用样本。生成版本需要：已标注、标签非空、纳入候选。"
+            )
             return
         self.dataset_build_status_label.setText(
             f"当前划分比例已满足 100%，可生成{task_type}数据集：共 {len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
@@ -1445,7 +1458,12 @@ class DatasetPage(QWidget):
     def _set_dataset_building_state(self, running: bool) -> None:
         """根据数据集生成状态统一启用或禁用相关控件。"""
 
-        self.generate_button.setEnabled(not running and self._split_ratio_total() == 100 and not self._is_auto_labeling())
+        self.generate_button.setEnabled(
+            not running
+            and self._split_ratio_total() == 100
+            and not self._is_auto_labeling()
+            and self._has_dataset_candidates_for_current_mode()
+        )
         self.dataset_type_radio.setEnabled(not running)
         self.dataset_individual_radio.setEnabled(not running)
         self.train_ratio.setEnabled(not running)
@@ -1460,3 +1478,10 @@ class DatasetPage(QWidget):
         """返回当前是否存在正在执行的数据集生成任务。"""
 
         return self._dataset_build_thread is not None
+
+    def _has_dataset_candidates_for_current_mode(self) -> bool:
+        """Return whether current samples can generate the selected dataset type."""
+
+        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
+        label_counts, _, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
+        return bool(label_counts)

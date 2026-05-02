@@ -698,21 +698,21 @@ class PreprocessPage(QWidget):
         self.preview_status_badge.set_status("USRP 就绪", "success", size="sm")
         self.preview_file_value.setText(result.path.name)
         self.preview_size_value.setText(self._format_bytes(result.file_size))
-        self.preview_header_value.setText("无 CAP 头")
-        self.preview_offset_value.setText("0x000")
+        self.preview_header_value.setText("-")
+        self.preview_offset_value.setText("-")
         self.preview_scope_value.setText(f"前 {result.statistics_window_pairs:,} 组 IQ")
         self.preview_note_label.setText(
-            "当前按 UHD rx_samples_to_file 输出解释：little-endian int16，I/Q 交织；同名 JSON 提供采样参数。"
+            "USRP IQ 文件没有 CAP 包头；本表仅展示采样参数，包头偏移列已置空。"
         )
 
         self._set_preview_field_labels(
             [
-                ("格式", ".iq + .json"),
-                ("分析带宽", "json: bandwidth_hz"),
-                ("实际采样率", "json: sample_rate_hz"),
-                ("中心频率", "json: center_frequency_hz"),
-                ("IQ 点数", "file_size / 4"),
-                ("天线", "json: antenna"),
+                ("格式", "-"),
+                ("分析带宽", "-"),
+                ("实际采样率", "-"),
+                ("中心频率", "-"),
+                ("IQ 点数", "-"),
+                ("天线", "-"),
             ]
         )
         field_values = [

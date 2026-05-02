@@ -37,25 +37,20 @@ def build_auto_labeled_records(
         )
 
         if mapping is None:
-            if record.source_type == "usrp_preprocess" and record.label_type:
-                if record.status == "已标注":
-                    matched += 1
-                else:
-                    pending += 1
-            else:
-                new_record = replace(
-                    record,
-                    label_type="",
-                    label_individual="",
-                    status="待标注",
-                )
-                pending += 1
+            new_record = replace(
+                record,
+                label_type="",
+                label_individual="",
+                status="待标注",
+            )
+            pending += 1
         elif individual_mode:
+            mapped_type = mapping.get("type", "").strip()
             mapped_individual = mapping.get("individual", "").strip()
             mapped_status = "已标注" if mapped_individual else "待标注"
             new_record = replace(
                 record,
-                label_type=mapping.get("type", "").strip(),
+                label_type=mapped_type,
                 label_individual=mapped_individual,
                 status=mapped_status,
             )
@@ -64,12 +59,18 @@ def build_auto_labeled_records(
             else:
                 pending += 1
         else:
+            mapped_type = mapping.get("type", "").strip()
+            mapped_status = "已标注" if mapped_type else "待标注"
             new_record = replace(
                 record,
-                label_type=mapping.get("type", "").strip(),
-                status="已标注",
+                label_type=mapped_type,
+                label_individual="",
+                status=mapped_status,
             )
-            matched += 1
+            if mapped_status == "已标注":
+                matched += 1
+            else:
+                pending += 1
 
         if new_record != record:
             updated += 1

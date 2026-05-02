@@ -142,7 +142,7 @@ class DatasetBuildWorker(QObject):
             sample_total = len(selected_sample_ids)
             self.progress_changed.emit(0, max(sample_total, 1), "正在收集可生成样本")
             if not label_counts:
-                self.failed.emit("当前没有可用的已标注样本，无法生成数据集版本。")
+                self.failed.emit("当前没有可用样本，无法生成数据集版本。请确认样本已标注、标签非空且处于纳入候选。")
                 return
 
             selected_sample_id_set = set(selected_sample_ids)

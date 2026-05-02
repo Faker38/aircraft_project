@@ -8,8 +8,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -130,15 +132,22 @@ class RecognitionPage(QWidget):
         layout.setSpacing(14)
 
         source_card = SectionCard(mode_title, mode_hint, compact=True)
+        source_card.setMinimumWidth(430)
+        source_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
 
         model_selector = QComboBox()
+        model_selector.setMinimumContentsLength(34)
+        model_selector.setMinimumWidth(420)
+        model_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        model_selector.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
         model_selector.currentIndexChanged.connect(lambda *_: self._on_model_changed(mode_key))
 
         sample_selector = QComboBox()
-        sample_selector.setMinimumContentsLength(28)
+        sample_selector.setMinimumContentsLength(34)
+        sample_selector.setMinimumWidth(420)
         sample_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         sample_selector.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
         sample_selector.currentIndexChanged.connect(lambda *_: self._load_selected_sample(mode_key))
@@ -158,7 +167,7 @@ class RecognitionPage(QWidget):
 
         source_card.body_layout.addLayout(form_layout)
         source_card.body_layout.addLayout(button_row)
-        layout.addWidget(source_card, 2)
+        layout.addWidget(source_card, 1)
 
         status_badge = StatusBadge(status_text, "info", size="sm")
         result_card = SectionCard(
@@ -167,16 +176,21 @@ class RecognitionPage(QWidget):
             right_widget=status_badge,
             compact=True,
         )
+        result_card.setMinimumWidth(450)
+        result_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         result_table = QTableWidget(0, 2)
         result_table.setHorizontalHeaderLabels(["项目", "内容"])
-        result_table.horizontalHeader().setStretchLastSection(True)
+        result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         result_table.verticalHeader().setVisible(False)
         result_table.setAlternatingRowColors(True)
+        result_table.setWordWrap(False)
+        result_table.setMinimumHeight(260)
         configure_scrollable(result_table)
 
         result_card.body_layout.addWidget(result_table)
-        layout.addWidget(result_card, 3)
+        layout.addWidget(result_card, 1)
 
         self.mode_controls[mode_key] = {
             "model_selector": model_selector,
@@ -255,7 +269,8 @@ class RecognitionPage(QWidget):
             else None
         )
 
-        records = self._records_for_mode(mode_key)
+        model_record = self._selected_type_model_record() if mode_key == "type" else None
+        records = self._records_for_mode(mode_key, model_record=model_record)
         sample_selector.blockSignals(True)
         sample_selector.clear()
         for record in records:
@@ -286,7 +301,11 @@ class RecognitionPage(QWidget):
             self._load_selected_sample(mode_key)
             return
 
-        empty_hint = "请先在数据集页补齐已标注样本" if mode_key == "type" else "个体识别样本暂未准备"
+        empty_hint = (
+            "当前模型无匹配样本，请在数据集页确认标签或切换模型"
+            if mode_key == "type" and model_record is not None
+            else ("请先在数据集页补齐已标注样本" if mode_key == "type" else "个体识别样本暂未准备")
+        )
         run_button = controls["run_button"]
         load_button = controls["load_button"]
         assert isinstance(run_button, QPushButton)
@@ -295,14 +314,33 @@ class RecognitionPage(QWidget):
         load_button.setEnabled(False)
         self._set_result_rows(mode_key, [["当前无可用样本", empty_hint]], status_text="待识别")
 
-    def _records_for_mode(self, mode_key: str) -> list[SampleRecord]:
+    def _records_for_mode(
+        self,
+        mode_key: str,
+        *,
+        model_record: TrainedModelRecord | None = None,
+    ) -> list[SampleRecord]:
         """按页签模式过滤更适合演示的样本。"""
 
         if mode_key == "type":
             labeled_records = [record for record in self.sample_records if record.label_type]
+            if model_record is not None:
+                label_space = set(model_record.label_space)
+                return [record for record in labeled_records if record.label_type in label_space]
             return labeled_records or list(self.sample_records)
         labeled_records = [record for record in self.sample_records if record.label_individual]
         return labeled_records or list(self.sample_records)
+
+    def _selected_type_model_record(self) -> TrainedModelRecord | None:
+        """Return the selected type model record when one is available."""
+
+        controls = self.mode_controls.get("type")
+        if not controls:
+            return None
+        model_selector = controls["model_selector"]
+        assert isinstance(model_selector, QComboBox)
+        record = model_selector.currentData()
+        return record if isinstance(record, TrainedModelRecord) else None
 
     def _on_model_changed(self, mode_key: str) -> None:
         """当用户切换模型时刷新顶部状态。"""
@@ -323,7 +361,10 @@ class RecognitionPage(QWidget):
         else:
             self.individual_model_metric.set_value("演示模式")
 
-        self._load_selected_sample(mode_key)
+        if mode_key == "type":
+            self._refresh_sample_selector(mode_key)
+        else:
+            self._load_selected_sample(mode_key)
 
     def _update_type_metric(self) -> None:
         """根据当前模型列表刷新顶部类型模型指标。"""
@@ -352,8 +393,12 @@ class RecognitionPage(QWidget):
         assert isinstance(run_button, QPushButton)
         assert isinstance(load_button, QPushButton)
         load_button.setEnabled(True)
+        model_record = None
         if mode_key == "type":
-            model_record = controls["model_selector"].currentData()
+            model_record = self._selected_type_model_record()
+            if isinstance(model_record, TrainedModelRecord) and record.label_type not in model_record.label_space:
+                self._refresh_sample_selector(mode_key)
+                return
             run_button.setEnabled(isinstance(model_record, TrainedModelRecord))
         else:
             run_button.setEnabled(True)
@@ -371,7 +416,12 @@ class RecognitionPage(QWidget):
                 ["来源路径", record.raw_file_path],
                 ["来源类型", record.source_label],
                 ["样本路径", record.sample_file_path],
-                ["来源版本状态", self._model_version_status_text(model_record) if mode_key == "type" and isinstance(model_record, TrainedModelRecord) else "-"],
+                [
+                    "来源版本状态",
+                    self._model_version_status_text(model_record)
+                    if mode_key == "type" and isinstance(model_record, TrainedModelRecord)
+                    else "-",
+                ],
             ],
             status_text=f"已加载 {record.sample_id}",
         )
@@ -417,15 +467,16 @@ class RecognitionPage(QWidget):
 
         current_label = record.label_type or "未标注"
         if current_label != "未标注" and current_label not in model_record.label_space:
+            self._refresh_sample_selector(mode_key)
             self._set_result_rows(
                 mode_key,
                 [
                     ["当前样本", record.sample_id],
                     ["当前标签", self._display_label(current_label)],
                     ["当前模型", model_record.model_id],
-                    ["提示", "该样本标签不在当前模型标签空间内，请切换匹配的数据集模型。"],
+                    ["提示", "已按当前模型标签空间重新筛选样本；请使用匹配样本或切换模型。"],
                 ],
-                status_text="标签不匹配",
+                status_text="待识别",
             )
             return
 
@@ -480,7 +531,8 @@ class RecognitionPage(QWidget):
         assert isinstance(result_table, QTableWidget)
 
         level = "success" if status_text.startswith("结果") else ("danger" if "失败" in status_text else "info")
-        status_badge.set_status(status_text, level, size="sm")
+        status_badge.set_status(self._compact_middle(status_text, 28), level, size="sm")
+        status_badge.setToolTip(status_text)
         result_table.setRowCount(len(rows))
         for row_index, row_data in enumerate(rows):
             for column, value in enumerate(row_data):
@@ -488,7 +540,8 @@ class RecognitionPage(QWidget):
                 if item is None:
                     item = QTableWidgetItem()
                     result_table.setItem(row_index, column, item)
-                item.setText(value)
+                item.setToolTip(value)
+                item.setText(value if column == 0 else self._compact_middle(value, 80))
 
     def _display_label(self, label: str) -> str:
         """把标签转换为适合界面展示的文本。"""
@@ -508,6 +561,15 @@ class RecognitionPage(QWidget):
         if len(sample_id) <= 26:
             return sample_id
         return f"{sample_id[:10]}...{sample_id[-10:]}"
+
+    def _compact_middle(self, text: str, limit: int) -> str:
+        """Return text with the middle elided for stable tables and badges."""
+
+        if len(text) <= limit:
+            return text
+        keep = max((limit - 3) // 2, 4)
+        tail = max(limit - 3 - keep, 4)
+        return f"{text[:keep]}...{text[-tail:]}"
 
     def _is_model_version_deleted(self, record: TrainedModelRecord) -> bool:
         """判断模型来源的数据集版本当前是否已删除。"""
