@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-import shutil
 
 from PySide6.QtCore import QDateTime, QTimer, Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -29,12 +28,26 @@ from PySide6.QtWidgets import (
 from config import (
     DEFAULT_DEVICE_IP,
     DEFAULT_DEVICE_PORT,
+    DEFAULT_USRP_BANDWIDTH_MHZ,
+    DEFAULT_USRP_ANTENNA,
+    DEFAULT_USRP_CENTER_FREQUENCY_MHZ,
     DEFAULT_USRP_DEVICE_ARGS,
+    DEFAULT_USRP_DURATION_S,
     DEFAULT_USRP_EXECUTABLE,
+    DEFAULT_USRP_GAIN_DB,
+    DEFAULT_USRP_SAMPLE_RATE_MHZ,
     RAW_DATA_DIR,
 )
-from services import USRPCaptureConfig, USRPCaptureResult, save_raw_capture_record
+from services import (
+    USRPCaptureConfig,
+    USRPCaptureResult,
+    USRPDiagnosticsResult,
+    format_b210_preflight_summary,
+    resolve_uhd_tool,
+    save_raw_capture_record,
+)
 from ui.usrp_capture_worker import USRPCaptureWorker
+from ui.usrp_diagnostics_worker import USRPDiagnosticsWorker
 from ui.widgets import (
     MetricCard,
     SectionCard,
@@ -60,6 +73,8 @@ class CapturePage(QWidget):
         self._connected = False
         self._capture_thread: QThread | None = None
         self._capture_worker: USRPCaptureWorker | None = None
+        self._diagnostics_thread: QThread | None = None
+        self._diagnostics_worker: USRPDiagnosticsWorker | None = None
         self._usrp_stop_requested = False
 
         root_layout = QVBoxLayout(self)
@@ -161,9 +176,13 @@ class CapturePage(QWidget):
         self.query_button = QPushButton("查询 *IDN?")
         self.query_button.clicked.connect(self._query_current_backend)
 
+        self.diagnostics_button = QPushButton("B210 预检")
+        self.diagnostics_button.clicked.connect(self._run_usrp_diagnostics)
+
         button_row.addWidget(self.connect_button)
         button_row.addWidget(self.disconnect_button)
         button_row.addWidget(self.query_button)
+        button_row.addWidget(self.diagnostics_button)
         button_row.addStretch(1)
 
         self.connection_status_label = QLabel()
@@ -372,35 +391,35 @@ class CapturePage(QWidget):
         self.usrp_center_frequency_input.setRange(0.009, 8000.0)
         self.usrp_center_frequency_input.setDecimals(3)
         self.usrp_center_frequency_input.setSuffix(" MHz")
-        self.usrp_center_frequency_input.setValue(2400.0)
+        self.usrp_center_frequency_input.setValue(DEFAULT_USRP_CENTER_FREQUENCY_MHZ)
         self.usrp_center_frequency_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_sample_rate_input = QDoubleSpinBox()
         self.usrp_sample_rate_input.setRange(0.100, 200.0)
         self.usrp_sample_rate_input.setDecimals(3)
         self.usrp_sample_rate_input.setSuffix(" MHz")
-        self.usrp_sample_rate_input.setValue(12.8)
+        self.usrp_sample_rate_input.setValue(DEFAULT_USRP_SAMPLE_RATE_MHZ)
         self.usrp_sample_rate_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_bandwidth_input = QDoubleSpinBox()
         self.usrp_bandwidth_input.setRange(0.100, 200.0)
         self.usrp_bandwidth_input.setDecimals(3)
         self.usrp_bandwidth_input.setSuffix(" MHz")
-        self.usrp_bandwidth_input.setValue(10.0)
+        self.usrp_bandwidth_input.setValue(DEFAULT_USRP_BANDWIDTH_MHZ)
         self.usrp_bandwidth_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_gain_input = QDoubleSpinBox()
         self.usrp_gain_input.setRange(0.0, 100.0)
         self.usrp_gain_input.setDecimals(1)
         self.usrp_gain_input.setSuffix(" dB")
-        self.usrp_gain_input.setValue(20.0)
+        self.usrp_gain_input.setValue(DEFAULT_USRP_GAIN_DB)
         self.usrp_gain_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_duration_input = QDoubleSpinBox()
         self.usrp_duration_input.setRange(0.5, 3600.0)
         self.usrp_duration_input.setDecimals(1)
         self.usrp_duration_input.setSuffix(" s")
-        self.usrp_duration_input.setValue(10.0)
+        self.usrp_duration_input.setValue(DEFAULT_USRP_DURATION_S)
         self.usrp_duration_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_output_format_box = QComboBox()
@@ -484,13 +503,14 @@ class CapturePage(QWidget):
         self.parameters_stack.setCurrentIndex(1 if usrp_mode else 0)
         self.mode_metric.set_value("USRP 真实采集" if usrp_mode else "3943B 演示")
         self.query_button.setText("检测命令" if usrp_mode else "查询 *IDN?")
+        self.diagnostics_button.setVisible(usrp_mode)
         self.parameter_note_label.setText(
-            "当前会通过外部采集命令生成独立 IQ 文件与元数据 JSON，不直接写成 .cap。"
+            "B210 演示默认按当前 USB2 已验通档位：2.4 GHz / 1 Msps / 10 MHz / 20 dB / 2 s；确认 USB3 后再升到 12.8 Msps。"
             if usrp_mode
             else "当前保留 3943B 演示模式，用于联调界面与文件记录流程。"
         )
         self.connection_status_label.setText(
-            "USRP 模式下，“连接设备”会检查采集命令是否可用；真实采集通过后台命令执行。"
+            "USRP 模式下可先点“B210 预检”，系统会检查 UHD 工具、设备枚举和 uhd_usrp_probe。"
             if usrp_mode
             else "3943B 当前保留演示模式，连接、断开和 *IDN? 查询都用于界面联调。"
         )
@@ -521,6 +541,7 @@ class CapturePage(QWidget):
             f"--gain {gain_db:.2f}",
             f"--duration {duration_s:.2f}",
             "--type short",
+            f"--ant {DEFAULT_USRP_ANTENNA}",
         ]
         if device_args:
             preview_parts.extend(["--args", device_args])
@@ -534,13 +555,16 @@ class CapturePage(QWidget):
 
         if self._is_usrp_mode() and connected:
             executable = self.usrp_executable_input.text().strip() or DEFAULT_USRP_EXECUTABLE
-            if not Path(executable).exists() and shutil.which(executable) is None:
+            resolved = resolve_uhd_tool(executable)
+            if resolved is None:
                 self._append_log(f"未找到 USRP 采集程序：{executable}")
                 self.connection_badge.set_status("命令不可用", "danger")
                 self._connected = False
                 self.connection_state_changed.emit(False, "USRP 未接入")
                 self._refresh_summary_metrics()
                 return
+            if append_log and resolved != executable:
+                self._append_log(f"已自动定位 USRP 采集程序：{resolved}")
 
         self._connected = connected
         if self._is_usrp_mode():
@@ -573,13 +597,76 @@ class CapturePage(QWidget):
 
         if self._is_usrp_mode():
             executable = self.usrp_executable_input.text().strip() or DEFAULT_USRP_EXECUTABLE
-            resolved = str(Path(executable)) if Path(executable).exists() else shutil.which(executable)
+            resolved = resolve_uhd_tool(executable)
             if resolved:
                 self._append_log(f"USRP 命令检测通过：{resolved}")
             else:
                 self._append_log(f"USRP 命令不可用：{executable}")
         else:
             self._append_log("*IDN? -> CETC,3943B,3943B-2026-001,Firmware 1.0")
+
+    def _run_usrp_diagnostics(self) -> None:
+        """Run a B210/UHD preflight check in the background."""
+
+        if not self._is_usrp_mode():
+            self._append_log("请先切换到 USRP 真实采集模式。")
+            return
+        if self._diagnostics_thread is not None:
+            self._append_log("B210 预检正在运行，请稍候。")
+            return
+
+        thread = QThread(self)
+        worker = USRPDiagnosticsWorker(self.usrp_device_args_input.text().strip() or DEFAULT_USRP_DEVICE_ARGS)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.started.connect(self._on_usrp_diagnostics_started)
+        worker.finished.connect(self._on_usrp_diagnostics_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(self._on_usrp_diagnostics_failed)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_usrp_diagnostics_worker)
+
+        self._diagnostics_thread = thread
+        self._diagnostics_worker = worker
+        thread.start()
+
+    def _on_usrp_diagnostics_started(self) -> None:
+        """Render B210 preflight start state."""
+
+        self.diagnostics_button.setEnabled(False)
+        self.connection_badge.set_status("预检中", "warning")
+        self._append_log("开始执行 B210 / UHD 预检。")
+
+    def _on_usrp_diagnostics_finished(self, result: USRPDiagnosticsResult) -> None:
+        """Render B210 preflight result."""
+
+        self.diagnostics_button.setEnabled(True)
+        for line in format_b210_preflight_summary(result):
+            self._append_log(line)
+        if result.is_ready:
+            self.connection_badge.set_status("B210 就绪", "success")
+            self._connected = True
+            self.connection_state_changed.emit(True, "B210 已就绪")
+        else:
+            self.connection_badge.set_status("B210 待处理", "warning")
+            self._connected = False
+            self.connection_state_changed.emit(False, "B210 待处理")
+        self._refresh_summary_metrics()
+
+    def _on_usrp_diagnostics_failed(self, message: str) -> None:
+        """Render B210 preflight failure."""
+
+        self.diagnostics_button.setEnabled(True)
+        self.connection_badge.set_status("预检失败", "danger")
+        self._append_log(message)
+
+    def _clear_usrp_diagnostics_worker(self) -> None:
+        """Clear B210 diagnostics worker references."""
+
+        self._diagnostics_thread = None
+        self._diagnostics_worker = None
 
     def _start_capture(self) -> None:
         """Start a capture task in the current mode."""
@@ -784,5 +871,6 @@ class CapturePage(QWidget):
         self.connect_button.setEnabled(not running)
         self.disconnect_button.setEnabled(not running)
         self.query_button.setEnabled(not running)
+        self.diagnostics_button.setEnabled(not running and self._diagnostics_thread is None)
         self.connection_stack.setEnabled(not running)
         self.parameters_stack.setEnabled(not running)

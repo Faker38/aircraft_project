@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import time
 
-from config import RAW_DATA_DIR
+from config import DEFAULT_USRP_ANTENNA, RAW_DATA_DIR, UHD_DEFAULT_INSTALL_DIR
 
 
 class USRPCaptureError(RuntimeError):
@@ -86,6 +86,7 @@ def run_usrp_capture(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=_build_subprocess_env(executable),
     )
 
     start_time = time.monotonic()
@@ -102,11 +103,19 @@ def run_usrp_capture(
                     process.wait(timeout=5)
                 raise USRPCaptureCancelled("采集已停止：USRP 任务已终止，未保留本次结果。")
 
-            percent = min(95, int((elapsed / max(config.duration_s, 0.1)) * 95))
-            _emit_progress(progress_callback, percent, f"正在采集 IQ 数据：{elapsed:.1f}s / {config.duration_s:.1f}s")
+            estimated_total_s = max(config.duration_s + 10.0, 12.0)
+            percent = min(95, int((elapsed / estimated_total_s) * 95))
+            _emit_progress(
+                progress_callback,
+                percent,
+                f"USRP 命令运行中：{elapsed:.1f}s，设定采样时长 {config.duration_s:.1f}s",
+            )
             current_second = int(elapsed)
             if current_second != last_log_second and current_second % 2 == 0:
-                log_text = f"[Info] USRP 采集中：{elapsed:.1f}s / {config.duration_s:.1f}s"
+                log_text = (
+                    f"[Info] USRP 命令运行中：{elapsed:.1f}s。"
+                    f"首次启动会加载固件/FPGA，{config.duration_s:.1f}s 只是实际采样时长。"
+                )
                 logs.append(log_text)
                 _emit_log(log_callback, log_text)
                 last_log_second = current_second
@@ -141,6 +150,7 @@ def run_usrp_capture(
         "bandwidth_hz": float(config.bandwidth_hz),
         "gain_db": float(config.gain_db),
         "duration_s": float(config.duration_s),
+        "antenna": DEFAULT_USRP_ANTENNA,
         "output_file_path": str(output_path),
         "created_at": _now_text(),
         "command_line": command_line,
@@ -176,7 +186,40 @@ def _resolve_executable(executable_path: str) -> str:
     resolved = shutil.which(candidate)
     if resolved:
         return resolved
+    for fallback in _uhd_executable_candidates(candidate):
+        if fallback.exists():
+            return str(fallback)
     raise USRPCaptureError(f"未找到 USRP 采集命令：{candidate}")
+
+
+def _uhd_executable_candidates(command_name: str) -> list[Path]:
+    """返回 UHD Windows 默认安装位置下的命令候选路径。"""
+
+    executable_name = command_name if command_name.lower().endswith(".exe") else f"{command_name}.exe"
+    return [
+        UHD_DEFAULT_INSTALL_DIR / "bin" / executable_name,
+        UHD_DEFAULT_INSTALL_DIR / "lib" / "uhd" / "examples" / executable_name,
+        UHD_DEFAULT_INSTALL_DIR / "lib" / "uhd" / "utils" / executable_name,
+    ]
+
+
+def _build_subprocess_env(executable: str) -> dict[str, str]:
+    """为 UHD examples 子进程补齐 DLL 搜索路径。"""
+
+    import os
+
+    env = dict(os.environ)
+    uhd_bin = str(UHD_DEFAULT_INSTALL_DIR / "bin")
+    current_path = env.get("PATH", "")
+    path_parts = [item for item in current_path.split(os.pathsep) if item]
+    if uhd_bin.lower() not in {item.lower() for item in path_parts}:
+        env["PATH"] = os.pathsep.join([uhd_bin, current_path]) if current_path else uhd_bin
+
+    executable_dir = str(Path(executable).resolve().parent)
+    path_parts = [item for item in env.get("PATH", "").split(os.pathsep) if item]
+    if executable_dir.lower() not in {item.lower() for item in path_parts}:
+        env["PATH"] = os.pathsep.join([executable_dir, env.get("PATH", "")])
+    return env
 
 
 def _build_output_path(output_dir: Path, config: USRPCaptureConfig) -> Path:
@@ -207,6 +250,8 @@ def _build_command(executable: str, config: USRPCaptureConfig, output_path: Path
         f"{float(config.duration_s):.2f}",
         "--type",
         "short",
+        "--ant",
+        DEFAULT_USRP_ANTENNA,
     ]
     if config.device_args.strip():
         command.extend(["--args", config.device_args.strip()])

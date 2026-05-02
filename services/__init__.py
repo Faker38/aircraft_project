@@ -45,6 +45,15 @@ from services.usrp_capture_service import (
     USRPCaptureResult,
     run_usrp_capture,
 )
+from services.usrp_diagnostics_service import (
+    USRPCommandResult,
+    USRPDiagnosticsResult,
+    USRPToolStatus,
+    check_uhd_tools,
+    format_b210_preflight_summary,
+    resolve_uhd_tool,
+    run_b210_preflight,
+)
 from services.workflow_records import (
     DatasetItemRecord,
     DatasetVersionDetail,
@@ -97,6 +106,13 @@ __all__ = [
     "USRPCaptureConfig",
     "USRPCaptureError",
     "USRPCaptureResult",
+    "USRPCommandResult",
+    "USRPDiagnosticsResult",
+    "USRPToolStatus",
+    "check_uhd_tools",
+    "format_b210_preflight_summary",
+    "resolve_uhd_tool",
+    "run_b210_preflight",
     "DatasetItemRecord",
     "DatasetVersionDetail",
     "DatasetVersionRecord",

@@ -23,6 +23,7 @@
 - [预处理算法 CAP 对接说明](docs/preprocess_cap_handoff.md)
 - [预处理接入结构图](docs/preprocess_integration_flow.md)
 - [仓库使用说明](docs/repository_usage.md)
+- [USRP B210 Windows 连接与烟测说明](docs/usrp_b210_setup.md)
 
 ## 运行环境
 
@@ -78,6 +79,8 @@ CAP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> man
 - 类型识别当前已接入真实训练与真实推理，默认使用 `scikit-learn + IQ 特征 + RandomForest`
 - 个体识别当前仍保留演示模式，不作为正式评估能力
 - 当前南京 demo 主线优先按本地 Windows CPU 跑通，GPU 不是本轮关键路径
+- USRP B210 已按 UHD Windows 默认安装目录做自动命令定位；安装器 PATH 写入失败时仍可使用软件采集入口
+- 当前 B210 演示默认使用已验通的 USB2 保守档：`1 Msps / 2 s / 2.4 GHz / 20 dB / RX2`
 - `qt-material` 未安装时，程序会自动回退到内置样式
 
 ## 目录结构
