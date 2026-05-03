@@ -80,13 +80,13 @@ class OverviewPage(QWidget):
         stage_value = QLabel("数据采集")
         stage_value.setObjectName("SummaryValue")
 
-        version_value = QLabel("v003")
-        version_value.setObjectName("SummaryValue")
+        self.version_value_label = QLabel("未生成")
+        self.version_value_label.setObjectName("SummaryValue")
 
         summary_rows = [
             ("设备状态", self.device_value_label),
             ("当前阶段", stage_value),
-            ("数据集版本", version_value),
+            ("数据集版本", self.version_value_label),
         ]
 
         for row, (label_text, value_widget) in enumerate(summary_rows):
@@ -196,10 +196,14 @@ class OverviewPage(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(12)
-        row.addWidget(MetricCard("原始任务数", "12", compact=True))
-        row.addWidget(MetricCard("已处理样本数", "148", accent_color="#7CB98B", compact=True))
-        row.addWidget(MetricCard("当前数据集版本", "v003", accent_color="#5EA6D3", compact=True))
-        row.addWidget(MetricCard("最新训练模型", "rf_type_v003", accent_color="#C59A63", compact=True))
+        self.raw_metric = MetricCard("原始任务数", "0", compact=True)
+        self.sample_metric = MetricCard("已处理样本数", "0", accent_color="#7CB98B", compact=True)
+        self.version_metric = MetricCard("当前数据集版本", "未生成", accent_color="#5EA6D3", compact=True)
+        self.model_metric = MetricCard("最新训练模型", "未生成", accent_color="#C59A63", compact=True)
+        row.addWidget(self.raw_metric)
+        row.addWidget(self.sample_metric)
+        row.addWidget(self.version_metric)
+        row.addWidget(self.model_metric)
 
         section.body_layout.addLayout(row)
         return section
@@ -208,12 +212,33 @@ class OverviewPage(QWidget):
         """Refresh the device status shown on the overview page."""
 
         self._device_connected = connected
-        self._refresh_device_state()
+        self._refresh_device_state("3943B 已接入" if connected else "3943B 未接入")
 
-    def _refresh_device_state(self) -> None:
+    def set_device_status(self, connected: bool, device_text: str) -> None:
+        """Refresh the device status using the shared shell text."""
+
+        self._device_connected = connected
+        self._refresh_device_state(device_text)
+
+    def set_workflow_metrics(self, payload: dict[str, object]) -> None:
+        """Refresh overview metrics from database-backed workflow state."""
+
+        raw_count = int(payload.get("raw_count", 0))
+        sample_count = int(payload.get("sample_count", 0))
+        current_version = str(payload.get("current_version") or "未生成")
+        latest_model = str(payload.get("latest_model") or "未生成")
+        self.raw_metric.set_value(str(raw_count))
+        self.sample_metric.set_value(str(sample_count))
+        self.version_metric.set_value(current_version)
+        self.model_metric.set_value(latest_model)
+        self.version_value_label.setText(current_version)
+
+    def _refresh_device_state(self, device_text: str | None = None) -> None:
         """Update summary labels based on the current mocked device state."""
 
-        if self._device_connected:
+        if device_text:
+            self.device_value_label.setText(device_text)
+        elif self._device_connected:
             self.device_value_label.setText("3943B 已接入")
         else:
             self.device_value_label.setText("3943B 未接入")

@@ -198,9 +198,13 @@ class PreprocessPage(QWidget):
         self.probe_button.setObjectName("PrimaryButton")
         self.probe_button.clicked.connect(self._load_selected_cap_preview)
 
+        self.refresh_files_button = QPushButton("刷新文件列表")
+        self.refresh_files_button.clicked.connect(self.refresh_input_records)
+
         self.file_status_badge = StatusBadge("待选择", "info", size="sm")
 
         action_row.addWidget(self.probe_button)
+        action_row.addWidget(self.refresh_files_button)
         action_row.addWidget(self.file_status_badge)
         action_row.addStretch(1)
 
@@ -233,10 +237,15 @@ class PreprocessPage(QWidget):
             for column, value in enumerate(values):
                 self._set_table_value(self.file_table, row_index, column, value)
 
-    def _on_input_mode_changed(self) -> None:
-        """Switch between CAP and USRP demo preprocessing input modes."""
+    def refresh_input_records(self, checked: bool = False, *, usrp_mode: bool | None = None) -> None:
+        """重新扫描当前模式或指定模式下的原始文件列表。"""
 
-        self.cap_records = self._build_input_records()
+        del checked
+        if usrp_mode is not None and self._is_usrp_demo_mode() != usrp_mode:
+            self.input_mode_box.setCurrentIndex(1 if usrp_mode else 0)
+            return
+
+        self.cap_records = self._build_input_records(usrp_mode=usrp_mode)
         self.current_probe_result = None
         self.current_usrp_info = None
         self.current_run_result = None
@@ -258,6 +267,11 @@ class PreprocessPage(QWidget):
             self._load_selected_cap_preview()
         else:
             self._update_file_selection_state()
+
+    def _on_input_mode_changed(self) -> None:
+        """Switch between CAP and USRP demo preprocessing input modes."""
+
+        self.refresh_input_records()
 
     def _sync_mode_text(self) -> None:
         """Refresh user-facing hints for the selected preprocessing mode."""
@@ -973,6 +987,7 @@ class PreprocessPage(QWidget):
         """根据后台任务状态统一启用或禁用控件。"""
 
         self.probe_button.setEnabled(not running)
+        self.refresh_files_button.setEnabled(not running)
         self.start_button.setEnabled(not running and self._selected_record() is not None and bool(self._selected_record()["exists"]))
         self.file_table.setEnabled(not running)
         self.slice_length_input.setEnabled(not running)

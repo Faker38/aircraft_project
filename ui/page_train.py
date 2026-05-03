@@ -162,7 +162,7 @@ class TrainPage(QWidget):
         self.training_status_badge = StatusBadge("待启动", "info", size="sm")
         section = SectionCard(
             "训练配置",
-            "当前以类型识别真实训练为主；个体识别页先保留演示态，避免 demo 范围失控。",
+            "当前以类型识别真实训练为主；个体指纹识别保留入口，真实训练服务待接入。",
             right_widget=self.training_status_badge,
             compact=True,
         )
@@ -170,7 +170,7 @@ class TrainPage(QWidget):
         switch_row = QHBoxLayout()
         switch_row.setSpacing(12)
         self.task_type_box = QComboBox()
-        self.task_type_box.addItems(["类型识别（真实训练）", "个体识别（演示模式）"])
+        self.task_type_box.addItems(["类型识别（真实训练）", "个体识别（保留功能，待接入）"])
         self.task_type_box.currentIndexChanged.connect(self._switch_config_mode)
 
         self.dataset_box = QComboBox()
@@ -263,9 +263,9 @@ class TrainPage(QWidget):
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
 
-        mode_value = QLabel("演示模式")
+        mode_value = QLabel("待接入")
         mode_value.setObjectName("ValueLabel")
-        hint_label = QLabel("本轮先把类型识别真实训练做稳。个体识别界面保留，但暂不接入真实训练服务。")
+        hint_label = QLabel("个体指纹识别是保留功能，后续接入真实训练服务；当前不会生成假的个体识别模型。")
         hint_label.setObjectName("MutedText")
         hint_label.setWordWrap(True)
 
@@ -370,8 +370,9 @@ class TrainPage(QWidget):
         self.export_path_input = QLineEdit(str(EXPORTS_DIR))
         self.format_box = QComboBox()
         self.format_box.addItems(["原始模型（joblib）", "ONNX（待扩展）"])
+        self.format_box.setEnabled(False)
 
-        note_label = QLabel("当前 demo 阶段以 model.joblib + metadata.json 作为真实交付产物；ONNX 导出后续再补。")
+        note_label = QLabel("当前真实导出产物固定为 model.joblib + metadata.json；ONNX 是保留目标，待扩展后再开放选择。")
         note_label.setObjectName("MutedText")
         note_label.setWordWrap(True)
 
@@ -520,8 +521,8 @@ class TrainPage(QWidget):
             return
 
         if self.task_type_box.currentIndex() != 0:
-            self.training_status_badge.set_status("演示模式", "warning", size="sm")
-            self.training_log.setPlainText("当前个体识别仍为演示模式，本轮请切回“类型识别（真实训练）”。")
+            self.training_status_badge.set_status("待接入", "warning", size="sm")
+            self.training_log.setPlainText("个体指纹识别训练入口已保留，真实训练服务待接入；本轮请切回“类型识别（真实训练）”。")
             return
 
         detail = self._current_dataset_detail()
@@ -1150,7 +1151,7 @@ class TrainPage(QWidget):
 
         self.config_stack.setCurrentIndex(index)
         if index == 1:
-            self.training_status_badge.set_status("演示模式", "warning", size="sm")
+            self.training_status_badge.set_status("待接入", "warning", size="sm")
         elif not self._is_running():
             self.training_status_badge.set_status("待启动", "info", size="sm")
 

@@ -63,6 +63,7 @@ class CapturePage(QWidget):
     """Capture workflow page for 3943B demo mode and USRP real capture V1."""
 
     connection_state_changed = Signal(bool, str)
+    raw_capture_completed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the capture page."""
@@ -146,7 +147,7 @@ class CapturePage(QWidget):
         self.connection_badge = StatusBadge("设备未接入", "danger", size="sm")
         section = SectionCard(
             "设备连接",
-            "支持 3943B 演示模式与 USRP 真实采集 V1。",
+            "支持 3943B 联调模拟入口与 USRP 真实采集 V1。",
             right_widget=self.connection_badge,
             compact=True,
         )
@@ -154,7 +155,7 @@ class CapturePage(QWidget):
         mode_row = QHBoxLayout()
         mode_row.setSpacing(12)
         self.capture_mode_box = QComboBox()
-        self.capture_mode_box.addItems(["3943B 演示模式", "USRP 真实采集"])
+        self.capture_mode_box.addItems(["3943B 联调模拟", "USRP 真实采集"])
         self.capture_mode_box.currentIndexChanged.connect(self._apply_mode_change)
         mode_row.addWidget(QLabel("采集模式"))
         mode_row.addWidget(self.capture_mode_box, 1)
@@ -423,7 +424,8 @@ class CapturePage(QWidget):
         self.usrp_duration_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_output_format_box = QComboBox()
-        self.usrp_output_format_box.addItems(["iq", "bin"])
+        self.usrp_output_format_box.addItem("iq（可进入演示预处理）", "iq")
+        self.usrp_output_format_box.addItem("bin（仅采集留档，暂不进入演示预处理）", "bin")
         self.usrp_output_format_box.currentIndexChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_device_label_input = QLineEdit("usrp_batch_001")
@@ -465,7 +467,7 @@ class CapturePage(QWidget):
         section.body_layout.addWidget(
             VisualInfoStrip(
                 "原始记录管理",
-                "USRP 采集 V1 会产出 IQ 原始文件和元数据 JSON；3943B 演示模式继续保留 CAP 记录，用于联调和展示。",
+                "USRP 采集 V1 会产出 IQ 原始文件和元数据 JSON；3943B 当前保留正式接入位置与联调模拟记录。",
                 illustration_name="empty_no_capture.svg",
                 ornament_name="decor_signal_corner_a.svg",
             )
@@ -477,8 +479,8 @@ class CapturePage(QWidget):
         """Insert initial mock rows into the capture table."""
 
         rows = [
-            ["20260415_213011_2400M_20M_drone_001.cap", "cap", "2400 MHz", "20 MHz", "3943B / drone_001", "已处理"],
-            ["20260416_093205_5800M_40M_drone_007.cap", "cap", "5800 MHz", "40 MHz", "3943B / drone_007", "原始"],
+            ["20260415_213011_2400M_20M_drone_001.cap", "cap", "2400 MHz", "20 MHz", "3943B 样例 / drone_001", "样例"],
+            ["20260416_093205_5800M_40M_drone_007.cap", "cap", "5800 MHz", "40 MHz", "3943B 样例 / drone_007", "样例"],
         ]
         for row_data in rows:
             self._append_row(row_data)
@@ -507,13 +509,15 @@ class CapturePage(QWidget):
         self.parameter_note_label.setText(
             "B210 演示默认按当前 USB2 已验通档位：2.4 GHz / 1 Msps / 10 MHz / 20 dB / 2 s；确认 USB3 后再升到 12.8 Msps。"
             if usrp_mode
-            else "当前保留 3943B 演示模式，用于联调界面与文件记录流程。"
+            else "当前保留 3943B 正式接入位置；控制协议待接入，现阶段用于界面联调模拟。"
         )
         self.connection_status_label.setText(
             "USRP 模式下可先点“B210 预检”，系统会检查 UHD 工具、设备枚举和 uhd_usrp_probe。"
             if usrp_mode
-            else "3943B 当前保留演示模式，连接、断开和 *IDN? 查询都用于界面联调。"
+            else "3943B 当前为协议待接入状态，连接、断开和 *IDN? 查询都用于界面联调。"
         )
+        if usrp_mode:
+            self._update_usrp_command_preview()
         self._update_connection_badge_text()
         self._refresh_summary_metrics()
 
@@ -549,22 +553,24 @@ class CapturePage(QWidget):
         if bandwidth_hz > 0:
             preview_parts.extend(["--bw", f"{bandwidth_hz:.0f}"])
         self.usrp_command_preview.setText(" ".join(preview_parts))
+        if hasattr(self, "parameter_note_label") and self._is_usrp_mode():
+            if self._current_usrp_output_format() == "bin":
+                self.parameter_note_label.setText(
+                    "当前选择 .bin 仅用于采集留档；南京演示预处理入口只扫描 .iq + 同名 .json。"
+                )
+            else:
+                self.parameter_note_label.setText(
+                    "B210 演示默认按当前 USB2 已验通档位：2.4 GHz / 1 Msps / 10 MHz / 20 dB / 2 s；.iq + 同名 JSON 可进入演示预处理。"
+                )
 
     def _set_connection_state(self, connected: bool, *, append_log: bool = True) -> None:
         """Update the current backend connection state."""
 
         if self._is_usrp_mode() and connected:
-            executable = self.usrp_executable_input.text().strip() or DEFAULT_USRP_EXECUTABLE
-            resolved = resolve_uhd_tool(executable)
-            if resolved is None:
-                self._append_log(f"未找到 USRP 采集程序：{executable}")
-                self.connection_badge.set_status("命令不可用", "danger")
-                self._connected = False
-                self.connection_state_changed.emit(False, "USRP 未接入")
-                self._refresh_summary_metrics()
-                return
-            if append_log and resolved != executable:
-                self._append_log(f"已自动定位 USRP 采集程序：{resolved}")
+            if append_log:
+                self._append_log("USRP 连接状态以 B210 预检为准，正在启动预检。")
+            self._run_usrp_diagnostics()
+            return
 
         self._connected = connected
         if self._is_usrp_mode():
@@ -579,16 +585,16 @@ class CapturePage(QWidget):
             self.connection_state_changed.emit(connected, "USRP 已就绪" if connected else "USRP 未接入")
         else:
             if connected:
-                self.connection_badge.set_status("3943B 在线", "success")
-                self.device_labels["链路"].setText("已建立")
+                self.connection_badge.set_status("3943B 联调模拟", "warning")
+                self.device_labels["链路"].setText("协议待接入 / 联调模拟")
                 if append_log:
-                    self._append_log("LAN 链路建立，设备响应正常。")
+                    self._append_log("3943B 正式控制协议待接入，当前仅开启界面联调模拟。")
             else:
                 self.connection_badge.set_status("3943B 未接入", "danger")
                 self.device_labels["链路"].setText("未建立")
                 if append_log:
                     self._append_log("链路已断开，等待重新接入。")
-            self.connection_state_changed.emit(connected, "3943B 已接入" if connected else "3943B 未接入")
+            self.connection_state_changed.emit(connected, "3943B 联调模拟" if connected else "3943B 未接入")
 
         self._refresh_summary_metrics()
 
@@ -603,7 +609,7 @@ class CapturePage(QWidget):
             else:
                 self._append_log(f"USRP 命令不可用：{executable}")
         else:
-            self._append_log("*IDN? -> CETC,3943B,3943B-2026-001,Firmware 1.0")
+            self._append_log("*IDN? -> 3943B 控制协议待接入，当前返回联调模拟响应。")
 
     def _run_usrp_diagnostics(self) -> None:
         """Run a B210/UHD preflight check in the background."""
@@ -627,6 +633,7 @@ class CapturePage(QWidget):
         worker.failed.connect(thread.quit)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(self._clear_usrp_diagnostics_worker)
+        thread.finished.connect(thread.deleteLater)
 
         self._diagnostics_thread = thread
         self._diagnostics_worker = worker
@@ -636,6 +643,8 @@ class CapturePage(QWidget):
         """Render B210 preflight start state."""
 
         self.diagnostics_button.setEnabled(False)
+        self._connected = False
+        self.connection_state_changed.emit(False, "B210 预检中")
         self.connection_badge.set_status("预检中", "warning")
         self._append_log("开始执行 B210 / UHD 预检。")
 
@@ -659,6 +668,8 @@ class CapturePage(QWidget):
         """Render B210 preflight failure."""
 
         self.diagnostics_button.setEnabled(True)
+        self._connected = False
+        self.connection_state_changed.emit(False, "B210 预检失败")
         self.connection_badge.set_status("预检失败", "danger")
         self._append_log(message)
 
@@ -682,7 +693,7 @@ class CapturePage(QWidget):
         if self._is_usrp_mode():
             self._start_usrp_capture()
         else:
-            self._append_log("下发记录参数，启动 IQ 记录。")
+            self._append_log("启动 3943B 联调模拟采集；该记录不代表真实设备采集。")
             self._capture_timer.start(150)
 
     def _start_usrp_capture(self) -> None:
@@ -700,7 +711,7 @@ class CapturePage(QWidget):
             gain_db=self.usrp_gain_input.value(),
             duration_s=self.usrp_duration_input.value(),
             output_dir=self.usrp_output_dir_input.text().strip() or str(RAW_DATA_DIR),
-            output_format=self.usrp_output_format_box.currentText(),
+            output_format=self._current_usrp_output_format(),
             device_label=self.usrp_device_label_input.text().strip() or "usrp",
         )
 
@@ -721,6 +732,7 @@ class CapturePage(QWidget):
         worker.failed.connect(thread.quit)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(self._clear_usrp_worker)
+        thread.finished.connect(thread.deleteLater)
 
         self._capture_thread = thread
         self._capture_worker = worker
@@ -736,7 +748,7 @@ class CapturePage(QWidget):
             self._capture_timer.stop()
             self.capture_stage_badge.set_status("已完成", "success")
             self._set_capture_running_state(False)
-            self._append_log("采集结束，文件已归档至 data/raw/。")
+            self._append_log("联调模拟采集结束，已在记录表生成模拟 CAP 条目。")
             self._append_mock_capture_file()
 
     def _stop_capture(self) -> None:
@@ -770,8 +782,8 @@ class CapturePage(QWidget):
             "cap",
             f"{self.center_frequency_input.value():.3f} MHz",
             f"{self.bandwidth_input.value():.3f} MHz",
-            f"3943B / {device_label}",
-            "原始",
+            f"3943B 联调模拟 / {device_label}",
+            "模拟记录",
         ]
         self._append_row(row_data)
 
@@ -811,6 +823,7 @@ class CapturePage(QWidget):
             ]
         )
         self._append_log(f"已登记原始采集文件：{result.output_file_path}")
+        self.raw_capture_completed.emit(result)
 
     def _on_usrp_capture_cancelled(self, message: str) -> None:
         """Render one cancelled USRP capture result."""
@@ -856,6 +869,12 @@ class CapturePage(QWidget):
         else:
             self.connection_badge.set_status("3943B 未接入", "danger")
             self.connection_state_changed.emit(False, "3943B 未接入")
+
+    def _current_usrp_output_format(self) -> str:
+        """Return the stable USRP output format value."""
+
+        value = self.usrp_output_format_box.currentData()
+        return str(value or self.usrp_output_format_box.currentText() or "iq")
 
     def _is_usrp_mode(self) -> bool:
         """Return whether the current page mode is USRP real capture."""

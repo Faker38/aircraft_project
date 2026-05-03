@@ -19,12 +19,19 @@ from services.workflow_records import (
     DatasetItemRecord,
     DatasetVersionDetail,
     DatasetVersionRecord,
+    LabelMappingRecord,
     SampleRecord,
     TrainedModelRecord,
 )
 
 
 DB_PATH = DB_DIR / "aircraft_project.sqlite3"
+
+DEFAULT_LABEL_MAPPINGS: tuple[LabelMappingRecord, ...] = (
+    LabelMappingRecord("usrp_2412M", "频点A", "", "USRP 演示频点 2412 MHz"),
+    LabelMappingRecord("usrp_2437M", "频点B", "", "USRP 演示频点 2437 MHz"),
+    LabelMappingRecord("usrp_2462M", "频点C", "", "USRP 演示频点 2462 MHz"),
+)
 
 
 def init_database() -> None:
@@ -119,6 +126,20 @@ def init_database() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS label_mappings (
+                device_id TEXT PRIMARY KEY,
+                label_type TEXT NOT NULL DEFAULT '',
+                label_individual TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_samples_status ON samples(status);
             CREATE INDEX IF NOT EXISTS idx_samples_raw_file ON samples(raw_file_id);
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id);
@@ -127,6 +148,7 @@ def init_database() -> None:
         )
         _ensure_column(conn, "dataset_items", "split", "TEXT NOT NULL DEFAULT 'train'")
         _migrate_trained_models_to_weak_version_reference(conn)
+        _seed_default_label_mappings(conn)
         conn.execute("UPDATE samples SET status = '待标注' WHERE status = '待复核'")
 
 
@@ -224,6 +246,96 @@ def save_raw_capture_record(
         )
 
 
+def list_label_mappings() -> list[LabelMappingRecord]:
+    """读取自动标注映射表。"""
+
+    init_database()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT device_id, label_type, label_individual, note
+            FROM label_mappings
+            ORDER BY device_id
+            """
+        ).fetchall()
+    return [
+        LabelMappingRecord(
+            device_id=row["device_id"],
+            label_type=row["label_type"],
+            label_individual=row["label_individual"],
+            note=row["note"],
+        )
+        for row in rows
+    ]
+
+
+def upsert_label_mapping(record: LabelMappingRecord) -> None:
+    """新增或更新一条自动标注映射。"""
+
+    init_database()
+    now = _now_text()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO label_mappings (
+                device_id, label_type, label_individual, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+                label_type = excluded.label_type,
+                label_individual = excluded.label_individual,
+                note = excluded.note,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.device_id,
+                record.label_type,
+                record.label_individual,
+                record.note,
+                now,
+                now,
+            ),
+        )
+
+
+def delete_label_mapping(device_id: str) -> None:
+    """删除一条自动标注映射。"""
+
+    init_database()
+    with _connect() as conn:
+        conn.execute("DELETE FROM label_mappings WHERE device_id = ?", (device_id,))
+
+
+def get_workflow_overview_counts() -> dict[str, object]:
+    """读取总览页使用的紧凑工作流指标。"""
+
+    init_database()
+    with _connect() as conn:
+        raw_count = int(conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0])
+        sample_count = int(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0])
+        version_row = conn.execute(
+            """
+            SELECT version_id
+            FROM dataset_versions
+            ORDER BY created_at DESC, version_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        model_row = conn.execute(
+            """
+            SELECT model_id
+            FROM trained_models
+            ORDER BY created_at DESC, model_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return {
+        "raw_count": raw_count,
+        "sample_count": sample_count,
+        "current_version": version_row["version_id"] if version_row is not None else "未生成",
+        "latest_model": model_row["model_id"] if model_row is not None else "未生成",
+    }
+
+
 def list_samples() -> list[SampleRecord]:
     """读取全部样本记录。"""
 
@@ -285,7 +397,7 @@ def delete_dataset_version(version_id: str) -> None:
 
 
 def clear_processed_dataset_records() -> dict[str, int]:
-    """清空预处理后样本、数据集版本和关联记录，不删除本地文件。"""
+    """清空原始记录、预处理样本、数据集和模型记录，不删除本地文件。"""
 
     init_database()
     with _connect() as conn:
@@ -294,12 +406,16 @@ def clear_processed_dataset_records() -> dict[str, int]:
             "dataset_items": int(conn.execute("SELECT COUNT(*) FROM dataset_items").fetchone()[0]),
             "dataset_versions": int(conn.execute("SELECT COUNT(*) FROM dataset_versions").fetchone()[0]),
             "samples": int(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]),
+            "preprocess_tasks": int(conn.execute("SELECT COUNT(*) FROM preprocess_tasks").fetchone()[0]),
+            "raw_files": int(conn.execute("SELECT COUNT(*) FROM raw_files").fetchone()[0]),
         }
-        # 只清理数据集管理闭环数据，不碰原始文件和预处理任务历史。
+        # 清理数据库记录，不删除本地 .iq/.json/.cap/.npy/model 文件。
         conn.execute("DELETE FROM trained_models")
         conn.execute("DELETE FROM dataset_items")
         conn.execute("DELETE FROM dataset_versions")
         conn.execute("DELETE FROM samples")
+        conn.execute("DELETE FROM preprocess_tasks")
+        conn.execute("DELETE FROM raw_files")
     return counts
 
 
@@ -613,6 +729,39 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
     if any(row["name"] == column_name for row in rows):
         return
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+
+
+def _seed_default_label_mappings(conn: sqlite3.Connection) -> None:
+    """首次初始化时写入 USRP 演示频点映射。"""
+
+    seeded = conn.execute(
+        "SELECT value FROM app_settings WHERE key = 'default_label_mappings_seeded'"
+    ).fetchone()
+    if seeded is not None and seeded["value"] == "1":
+        return
+
+    now = _now_text()
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO label_mappings (
+            device_id, label_type, label_individual, note, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                record.device_id,
+                record.label_type,
+                record.label_individual,
+                record.note,
+                now,
+                now,
+            )
+            for record in DEFAULT_LABEL_MAPPINGS
+        ],
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('default_label_mappings_seeded', '1')"
+    )
 
 
 def _upsert_samples(

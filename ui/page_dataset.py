@@ -27,13 +27,17 @@ from PySide6.QtWidgets import (
 from config import BASE_DIR
 from services import (
     DatasetVersionRecord,
+    LabelMappingRecord,
     SampleRecord,
     clear_processed_dataset_records,
+    delete_label_mapping,
     delete_dataset_version,
     delete_sample,
     init_database,
     list_dataset_versions,
+    list_label_mappings,
     list_samples,
+    upsert_label_mapping,
     upsert_samples,
 )
 from ui.auto_label_worker import AutoLabelWorker
@@ -198,14 +202,7 @@ class DatasetPage(QWidget):
             compact=True,
         )
 
-        mapping_rows = [
-            ["usrp_2412M", "频点A", "", "USRP 演示频点 2412 MHz"],
-            ["usrp_2437M", "频点B", "", "USRP 演示频点 2437 MHz"],
-            ["usrp_2462M", "频点C", "", "USRP 演示频点 2462 MHz"],
-            ["batch_001", "类别A", "类别A_001", "第一批演示样本"],
-            ["batch_002", "类别B", "类别B_001", "第二批演示样本"],
-            ["batch_003", "类别C", "类别C_001", "第三批演示样本"],
-        ]
+        mapping_rows = list_label_mappings()
         self.mapping_table = QTableWidget(len(mapping_rows), 4)
         self.mapping_table.setHorizontalHeaderLabels(["设备编号", "类型标签", "个体标签", "备注"])
         self.mapping_table.horizontalHeader().setStretchLastSection(True)
@@ -216,7 +213,8 @@ class DatasetPage(QWidget):
         configure_scrollable(self.mapping_table)
         self.mapping_table.itemSelectionChanged.connect(self._sync_mapping_form_from_selection)
 
-        for row_index, row_data in enumerate(mapping_rows):
+        for row_index, record in enumerate(mapping_rows):
+            row_data = [record.device_id, record.label_type, record.label_individual, record.note]
             for column, value in enumerate(row_data):
                 self.mapping_table.setItem(row_index, column, QTableWidgetItem(value))
 
@@ -521,12 +519,14 @@ class DatasetPage(QWidget):
 
         section = SectionCard(
             "危险操作",
-            "仅用于联调清理：清空数据库中的样本、数据集版本和关联记录，不删除本地文件。",
+            "仅用于联调清理：清空原始记录、预处理样本、数据集版本和模型记录，不删除本地文件。",
             right_widget=StatusBadge("谨慎使用", "danger", size="sm"),
             compact=True,
         )
 
-        warning_label = QLabel("清空后训练页和识别页会失去当前样本/版本入口；本地 .npy、.cap 和 manifest 文件不会被删除。")
+        warning_label = QLabel(
+            "清空后采集、预处理、训练和识别页会失去当前数据库记录；本地 .iq、.json、.npy、.cap、manifest 和模型文件不会被删除。"
+        )
         warning_label.setObjectName("MutedText")
         warning_label.setWordWrap(True)
 
@@ -759,6 +759,18 @@ class DatasetPage(QWidget):
                 self.mapping_status_label.setText(f"设备编号 {device_id} 已存在，请直接选中原记录进行修改。")
                 return
 
+        mapping_record = LabelMappingRecord(
+            device_id=device_id,
+            label_type=type_label,
+            label_individual=individual_label,
+            note=note,
+        )
+        try:
+            upsert_label_mapping(mapping_record)
+        except Exception as exc:
+            self.mapping_status_label.setText(f"映射保存失败：{exc}")
+            return
+
         if target_row < 0:
             target_row = self.mapping_table.rowCount()
             self.mapping_table.insertRow(target_row)
@@ -783,6 +795,12 @@ class DatasetPage(QWidget):
             return
 
         device_id = self._item_text(self.mapping_table, row, 0)
+        try:
+            delete_label_mapping(device_id)
+        except Exception as exc:
+            self.mapping_status_label.setText(f"映射删除失败：{exc}")
+            return
+
         self.mapping_table.removeRow(row)
         self._mapping_edit_row = None
         self._clear_mapping_form()
@@ -1040,17 +1058,13 @@ class DatasetPage(QWidget):
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _clear_processed_dataset_database(self) -> None:
-        """清空样本和数据集版本数据库记录，保留本地文件。"""
-
-        if not self.sample_records and not self.dataset_versions:
-            self.dataset_build_status_label.setText("当前没有可清空的样本或数据集版本。")
-            return
+        """清空联调数据库记录，保留本地文件。"""
 
         reply = QMessageBox.warning(
             self,
             "确认清空样本数据库",
-            "该操作会清空数据库中的样本记录、数据集版本和版本关联。\n\n"
-            "不会删除本地 .npy 样本文件、.cap 原始文件和 manifest 文件。\n\n"
+            "该操作会清空数据库中的原始记录、预处理任务、样本记录、数据集版本、版本关联和模型记录。\n\n"
+            "不会删除本地 .iq、.json、.npy、.cap、manifest 或模型文件。\n\n"
             "该操作不可撤销，请确认是否继续。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1080,9 +1094,11 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self.version_metric.set_value("未生成")
-        self.annotation_status_label.setText("样本数据库已清空，请重新从预处理结果同步样本。")
+        self.annotation_status_label.setText("样本数据库已清空，请重新从采集和预处理结果同步样本。")
         self.dataset_build_status_label.setText(
             "已清空："
+            f"原始记录 {counts.get('raw_files', 0)} 条，"
+            f"预处理任务 {counts.get('preprocess_tasks', 0)} 条，"
             f"样本 {counts.get('samples', 0)} 条，"
             f"数据集版本 {counts.get('dataset_versions', 0)} 个，"
             f"版本关联 {counts.get('dataset_items', 0)} 条，"

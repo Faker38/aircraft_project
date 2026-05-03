@@ -52,6 +52,16 @@ class SampleRecord:
 
 
 @dataclass(frozen=True)
+class LabelMappingRecord:
+    """数据集页用于自动标注的设备编号映射。"""
+
+    device_id: str
+    label_type: str
+    label_individual: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class DatasetVersionRecord:
     """数据集页和训练页共用的数据集版本摘要。"""
 

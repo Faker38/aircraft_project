@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import APP_NAME, APP_SUBTITLE
+from services import get_workflow_overview_counts
 from ui.page_capture import CapturePage
 from ui.page_dataset import DatasetPage
 from ui.page_overview import OverviewPage
@@ -168,18 +169,22 @@ class MainWindow(QMainWindow):
         overview_page.navigate_requested.connect(self.select_page)
 
         capture_page = CapturePage()
-        capture_page.connection_state_changed.connect(self._update_connection_badge)
-
         preprocess_page = PreprocessPage()
         dataset_page = DatasetPage()
         train_page = TrainPage()
         recognition_page = RecognitionPage()
 
+        capture_page.connection_state_changed.connect(self._update_connection_badge)
+        capture_page.raw_capture_completed.connect(lambda _result: preprocess_page.refresh_input_records(usrp_mode=True))
+        capture_page.raw_capture_completed.connect(lambda _result: self._refresh_overview_metrics())
         preprocess_page.navigate_requested.connect(self.select_page)
         preprocess_page.sample_records_generated.connect(dataset_page.add_preprocess_records)
         dataset_page.dataset_versions_updated.connect(train_page.set_dataset_versions)
+        dataset_page.dataset_versions_updated.connect(lambda _records: self._refresh_overview_metrics())
         dataset_page.sample_records_updated.connect(recognition_page.set_sample_records)
+        dataset_page.sample_records_updated.connect(lambda _records: self._refresh_overview_metrics())
         train_page.trained_models_updated.connect(recognition_page.set_trained_models)
+        train_page.trained_models_updated.connect(lambda _records: self._refresh_overview_metrics())
 
         self.pages = {
             "overview": overview_page,
@@ -195,6 +200,7 @@ class MainWindow(QMainWindow):
         train_page.set_dataset_versions(dataset_page.get_dataset_versions())
         recognition_page.set_sample_records(dataset_page.get_sample_records())
         recognition_page.set_trained_models(train_page.get_trained_models())
+        self._refresh_overview_metrics()
 
         layout.addWidget(self.page_stack, 1)
         return wrapper
@@ -271,16 +277,25 @@ class MainWindow(QMainWindow):
     def _update_connection_badge(self, connected: bool, device_text: str) -> None:
         """Update shared device status widgets from the capture page."""
 
-        if connected:
-            self.global_connection_badge.set_status(device_text, "success")
-            self.header_device_badge.set_status(device_text, "success")
+        if "联调模拟" in device_text or "预检中" in device_text or "待处理" in device_text:
+            badge_level = "warning"
+        elif connected:
+            badge_level = "success"
         else:
-            self.global_connection_badge.set_status(device_text, "danger")
-            self.header_device_badge.set_status(device_text, "danger")
+            badge_level = "danger"
+        self.global_connection_badge.set_status(device_text, badge_level)
+        self.header_device_badge.set_status(device_text, badge_level)
 
         overview_page = self.pages.get("overview")
         if isinstance(overview_page, OverviewPage):
-            overview_page.set_device_connected(connected)
+            overview_page.set_device_status(connected, device_text)
+
+    def _refresh_overview_metrics(self) -> None:
+        """Update overview metrics from current database state."""
+
+        overview_page = self.pages.get("overview")
+        if isinstance(overview_page, OverviewPage):
+            overview_page.set_workflow_metrics(get_workflow_overview_counts())
 
     def _refresh_clock(self) -> None:
         """Update the header clock display."""

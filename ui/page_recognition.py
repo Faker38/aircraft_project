@@ -54,7 +54,7 @@ class RecognitionPage(QWidget):
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
         self.type_model_metric = MetricCard("类型识别模型", "未生成", compact=True)
-        self.individual_model_metric = MetricCard("指纹识别模型", "演示模式", accent_color="#7CB98B", compact=True)
+        self.individual_model_metric = MetricCard("指纹识别模型", "待接入", accent_color="#7CB98B", compact=True)
         self.latest_result_metric = MetricCard("最近识别结果", "待识别", accent_color="#C59A63", compact=True)
         metrics_row.addWidget(self.type_model_metric)
         metrics_row.addWidget(self.individual_model_metric)
@@ -75,8 +75,8 @@ class RecognitionPage(QWidget):
             self._build_recognition_tab(
                 mode_key="individual",
                 mode_title="无人机个体指纹识别",
-                mode_hint="当前保留演示结构，后续再接入真实个体识别模型。",
-                status_text="演示模式",
+                mode_hint="当前保留个体指纹识别入口，真实个体模型与推理服务待接入。",
+                status_text="待接入",
             ),
             "无人机个体指纹识别",
         )
@@ -85,7 +85,7 @@ class RecognitionPage(QWidget):
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
-        # 个体识别当前仍是演示模式，这里先填入一个固定说明项，避免下拉框为空。
+        # 个体识别当前保留入口，这里先填入固定说明项，避免下拉框为空。
         self._refresh_model_selector("individual")
 
     def _build_visual_banner(self) -> VisualHeroCard:
@@ -93,7 +93,7 @@ class RecognitionPage(QWidget):
 
         return VisualHeroCard(
             "无人机识别 · 实时判别视图",
-            "当前类型识别页直接读取训练页输出的真实模型进行推理；个体指纹识别仍保持演示模式，避免超出演示主线。",
+            "当前类型识别页直接读取训练页输出的真实模型进行推理；个体指纹识别入口已保留，真实服务待接入。",
             background_name="recognition_header_bg.svg",
             chips=["真实模型推理", "标签空间校验", "结果可追溯"],
             ornament_name="decor_lock_target_c.svg",
@@ -227,7 +227,7 @@ class RecognitionPage(QWidget):
                 display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}{version_hint}"
                 model_selector.addItem(display_text, record)
         else:
-            model_selector.addItem("演示模式 | 个体识别待接入", "demo")
+            model_selector.addItem("保留功能 | 真实个体模型待接入", "pending")
         model_selector.blockSignals(False)
 
         if model_selector.count() == 0:
@@ -359,7 +359,7 @@ class RecognitionPage(QWidget):
             else:
                 self.type_model_metric.set_value("未生成")
         else:
-            self.individual_model_metric.set_value("演示模式")
+            self.individual_model_metric.set_value("待接入")
 
         if mode_key == "type":
             self._refresh_sample_selector(mode_key)
@@ -383,7 +383,7 @@ class RecognitionPage(QWidget):
 
         record = sample_selector.currentData()
         if not isinstance(record, SampleRecord):
-            waiting_text = "请先在训练页生成模型" if mode_key == "type" else "当前为演示模式"
+            waiting_text = "请先在训练页生成模型" if mode_key == "type" else "个体指纹识别入口已保留，真实服务待接入"
             sample_selector.setToolTip("")
             self._set_result_rows(mode_key, [["当前无可用样本", waiting_text]], status_text="待识别")
             return
@@ -442,19 +442,15 @@ class RecognitionPage(QWidget):
 
         if mode_key == "individual":
             current_label = record.label_individual or "未标注"
-            predicted_label = current_label if current_label != "未标注" else "unknown_id"
             rows = [
                 ["当前样本", record.sample_id],
                 ["当前标签", current_label],
-                ["预测标签", predicted_label],
-                ["置信度", "演示模式"],
-                ["是否命中", "是" if current_label != "未标注" else "否"],
                 ["来源文件", record.raw_file_name],
                 ["来源路径", record.raw_file_path],
-                ["备注", "当前为演示级个体识别结果，不作为正式评估依据。"],
+                ["当前状态", "个体指纹识别入口已保留，真实模型与推理服务待接入。"],
             ]
-            self.latest_result_metric.set_value(predicted_label)
-            self._set_result_rows(mode_key, rows, status_text=f"结果: {predicted_label}")
+            self.latest_result_metric.set_value("个体待接入")
+            self._set_result_rows(mode_key, rows, status_text="待接入")
             return
 
         model_record = model_selector.currentData()
