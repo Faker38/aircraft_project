@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import shutil
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QHeaderView,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import EXPORTS_DIR
+from config import EXPORTS_DIR, MODELS_DIR
 from services import (
     DatasetVersionDetail,
     DatasetVersionRecord,
@@ -67,6 +69,8 @@ class TrainPage(QWidget):
         self._eval_thread: QThread | None = None
         self._eval_worker: ModelEvalWorker | None = None
         self._stop_requested = False
+        self._last_auto_model_name = "rf_type_demo"
+        self._model_name_user_edited = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -227,6 +231,7 @@ class TrainPage(QWidget):
 
         self.model_name_input = QLineEdit("rf_type_demo")
         self.model_name_input.setPlaceholderText("输入模型名称前缀")
+        self.model_name_input.textEdited.connect(self._mark_model_name_edited)
 
         self.n_estimators_spin = QSpinBox()
         self.n_estimators_spin.setRange(10, 1000)
@@ -276,19 +281,34 @@ class TrainPage(QWidget):
     def _build_results_card(self) -> SectionCard:
         """创建训练结果展示区。"""
 
-        section = SectionCard("训练结果", "显示真实训练摘要、混淆矩阵文本和类别指标。", compact=True)
+        section = SectionCard("训练结果", "显示真实训练摘要、关键指标、混淆矩阵和类别指标。", compact=True)
 
-        summary_row = QHBoxLayout()
-        summary_row.setSpacing(12)
+        result_metric_row = QHBoxLayout()
+        result_metric_row.setSpacing(10)
+        self.result_val_metric = MetricCard("验证精度", "-", compact=True)
+        self.result_test_metric = MetricCard("测试精度", "-", accent_color="#7CB98B", compact=True)
+        self.result_f1_metric = MetricCard("Macro F1", "-", accent_color="#C59A63", compact=True)
+        self.result_sample_metric = MetricCard("标签 / 样本", "-", accent_color="#6CA5D9", compact=True)
+        result_metric_row.addWidget(self.result_val_metric)
+        result_metric_row.addWidget(self.result_test_metric)
+        result_metric_row.addWidget(self.result_f1_metric)
+        result_metric_row.addWidget(self.result_sample_metric)
 
         self.confusion_placeholder = QPlainTextEdit()
         self.confusion_placeholder.setReadOnly(True)
         self.confusion_placeholder.setPlainText(
             "训练摘要显示区\n\n"
-            "当前尚未执行真实训练。完成训练后，这里会展示标签分布、混淆矩阵和模型产物路径。"
+            "当前尚未执行真实训练。完成训练后，这里会展示模型编号、版本、参数和产物路径。"
         )
-        self.confusion_placeholder.setMinimumHeight(260)
+        self.confusion_placeholder.setMinimumHeight(150)
         configure_scrollable(self.confusion_placeholder)
+
+        self.confusion_table = QTableWidget(0, 0)
+        self.confusion_table.verticalHeader().setVisible(False)
+        self.confusion_table.setAlternatingRowColors(True)
+        self.confusion_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.confusion_table.setMinimumHeight(220)
+        configure_scrollable(self.confusion_table)
 
         self.training_log = QPlainTextEdit()
         self.training_log.setReadOnly(True)
@@ -296,21 +316,25 @@ class TrainPage(QWidget):
             "等待训练任务启动。\n"
             "当前页面会直接消费数据集管理页生成的数据集版本与 manifest。"
         )
-        self.training_log.setMinimumHeight(260)
+        self.training_log.setMinimumHeight(170)
         configure_scrollable(self.training_log)
-
-        summary_row.addWidget(self.confusion_placeholder, 2)
-        summary_row.addWidget(self.training_log, 1)
 
         self.detail_table = QTableWidget(0, 5)
         self.detail_table.setHorizontalHeaderLabels(["类别", "精确率", "召回率", "F1", "样本数"])
-        self.detail_table.horizontalHeader().setStretchLastSection(True)
+        self.detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.detail_table.verticalHeader().setVisible(False)
         self.detail_table.setAlternatingRowColors(True)
+        self.detail_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         configure_scrollable(self.detail_table)
 
-        section.body_layout.addLayout(summary_row)
+        section.body_layout.addLayout(result_metric_row)
+        section.body_layout.addWidget(self.confusion_placeholder)
+        section.body_layout.addWidget(QLabel("混淆矩阵（测试集）"))
+        section.body_layout.addWidget(self.confusion_table)
+        section.body_layout.addWidget(QLabel("类别指标"))
         section.body_layout.addWidget(self.detail_table)
+        section.body_layout.addWidget(QLabel("训练日志"))
+        section.body_layout.addWidget(self.training_log)
         return section
 
     def _build_export_workspace(self) -> QWidget:
@@ -633,6 +657,8 @@ class TrainPage(QWidget):
             "停止请求已接收。\n\n"
             "当前训练采用单次拟合方式；如果已经进入随机森林拟合阶段，无法瞬时强停，系统会在当前阶段结束后丢弃本次结果，不写入模型。"
         )
+        self.confusion_table.setRowCount(0)
+        self.confusion_table.setColumnCount(0)
 
     def _on_train_started(self, version_id: str) -> None:
         """在训练真正开始时刷新状态。"""
@@ -651,6 +677,13 @@ class TrainPage(QWidget):
             "训练进行中，请稍候...\n\n"
             "当前会按阶段执行：读取版本 -> 统计划分 -> 提取特征 -> 训练随机森林 -> 评估结果 -> 写入模型。"
         )
+        self.result_val_metric.set_value("-")
+        self.result_test_metric.set_value("-")
+        self.result_f1_metric.set_value("-")
+        self.result_sample_metric.set_value("训练中")
+        self.confusion_table.setRowCount(0)
+        self.confusion_table.setColumnCount(0)
+        self.detail_table.setRowCount(0)
 
     def _on_train_progress(self, stage_text: str, log_text: str) -> None:
         """在训练过程中持续刷新阶段性状态。"""
@@ -680,6 +713,11 @@ class TrainPage(QWidget):
         self.export_metric.set_value("joblib")
         self.training_log.setPlainText("\n".join(result.logs))
         self.confusion_placeholder.setPlainText(self._build_training_summary(result))
+        self.result_val_metric.set_value(result.model_record.validation_accuracy_text)
+        self.result_test_metric.set_value(result.model_record.accuracy_text)
+        self.result_f1_metric.set_value(result.model_record.macro_f1_text)
+        self.result_sample_metric.set_value(f"{len(result.label_counts)} / {sum(result.label_counts.values())}")
+        self._refresh_confusion_table(result.metric_rows, result.confusion_matrix)
         self._refresh_detail_table(result.metric_rows)
 
         self._refresh_trained_model_list_from_database(preferred_model_id=result.model_record.model_id)
@@ -700,6 +738,8 @@ class TrainPage(QWidget):
             "本次训练已停止。\n\n"
             "当前请求已在安全检查点生效，本次不会生成新的模型记录，也不会写入新的模型产物。"
         )
+        self.confusion_table.setRowCount(0)
+        self.confusion_table.setColumnCount(0)
         self._refresh_trained_model_list_from_database()
         if self.trained_models:
             self.export_summary_label.setText("本次训练已停止，未生成新模型；当前已有模型记录保持不变。")
@@ -716,6 +756,8 @@ class TrainPage(QWidget):
         self.training_status_badge.set_status("训练失败", "danger", size="sm")
         self.training_log.setPlainText(message)
         self.confusion_placeholder.setPlainText("训练未完成，请先修正数据集或模型配置后重试。")
+        self.confusion_table.setRowCount(0)
+        self.confusion_table.setColumnCount(0)
 
     def _on_eval_started(self, model_id: str) -> None:
         """在模型测试真正开始时刷新状态。"""
@@ -814,7 +856,7 @@ class TrainPage(QWidget):
         self.training_log.setPlainText("\n".join(lines))
 
     def _build_training_summary(self, result: TrainingRunResult) -> str:
-        """构建训练摘要和混淆矩阵文本。"""
+        """构建训练摘要文本。"""
 
         record = result.model_record
         accuracy_text = record.accuracy_text
@@ -834,25 +876,7 @@ class TrainPage(QWidget):
             "",
             "标签分布：",
             *label_lines,
-            "",
-            "混淆矩阵（测试集）：",
         ]
-
-        labels = [row.label for row in result.metric_rows]
-        if not labels or not result.confusion_matrix:
-            summary_lines.append("当前没有可展示的混淆矩阵。")
-            return "\n".join(summary_lines)
-
-        header = "True\\Pred".ljust(18)
-        for label in labels:
-            header += self._display_label(label)[:14].ljust(16)
-        summary_lines.append(header)
-
-        for row_label, row_values in zip(labels, result.confusion_matrix):
-            line = self._display_label(row_label)[:14].ljust(18)
-            for value in row_values:
-                line += str(value).ljust(16)
-            summary_lines.append(line)
 
         summary_lines.extend(
             [
@@ -896,6 +920,34 @@ class TrainPage(QWidget):
             summary_lines.append(line)
         return "\n".join(summary_lines)
 
+    def _refresh_confusion_table(
+        self,
+        metric_rows: list[TrainingMetricRow],
+        confusion_matrix: list[list[int]],
+    ) -> None:
+        """用表格展示训练测试集混淆矩阵。"""
+
+        labels = [self._display_label(row.label) for row in metric_rows]
+        if not labels or not confusion_matrix:
+            self.confusion_table.setRowCount(0)
+            self.confusion_table.setColumnCount(0)
+            return
+
+        self.confusion_table.setColumnCount(len(labels) + 1)
+        self.confusion_table.setRowCount(len(labels))
+        self.confusion_table.setHorizontalHeaderLabels(["真实\\预测", *labels])
+        for row_index, (label, row_values) in enumerate(zip(labels, confusion_matrix)):
+            values = [label, *[str(value) for value in row_values]]
+            for column, value in enumerate(values):
+                item = self.confusion_table.item(row_index, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.confusion_table.setItem(row_index, column, item)
+                item.setText(value)
+                item.setToolTip(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.confusion_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
     def _refresh_detail_table(self, metric_rows: list[TrainingMetricRow]) -> None:
         """刷新类别指标表。"""
 
@@ -914,6 +966,8 @@ class TrainPage(QWidget):
                     item = QTableWidgetItem()
                     self.detail_table.setItem(row_index, column, item)
                 item.setText(value)
+                item.setToolTip(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def _refresh_evaluation_detail_table(self, metric_rows: list[TrainingMetricRow]) -> None:
         """刷新模型测试的类别指标表。"""
@@ -933,6 +987,8 @@ class TrainPage(QWidget):
                     item = QTableWidgetItem()
                     self.eval_detail_table.setItem(row_index, column, item)
                 item.setText(value)
+                item.setToolTip(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def _refresh_trained_model_list_from_database(self, preferred_model_id: str | None = None) -> None:
         """从数据库刷新训练模型列表，并同步给识别页。"""
@@ -947,7 +1003,9 @@ class TrainPage(QWidget):
         for record in self.trained_models:
             display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}"
             self.export_model_box.addItem(display_text, record)
+            self.export_model_box.setItemData(self.export_model_box.count() - 1, display_text, Qt.ItemDataRole.ToolTipRole)
             self.eval_model_box.addItem(display_text, record)
+            self.eval_model_box.setItemData(self.eval_model_box.count() - 1, display_text, Qt.ItemDataRole.ToolTipRole)
         self.export_model_box.blockSignals(False)
         self.eval_model_box.blockSignals(False)
 
@@ -1044,22 +1102,36 @@ class TrainPage(QWidget):
                 item.setText(value)
 
     def _delete_selected_model(self) -> None:
-        """删除当前选中的模型数据库记录，不删除本地模型文件。"""
+        """删除当前选中的模型记录，可选同步删除本地模型目录。"""
 
         record = self.export_model_box.currentData()
         if not isinstance(record, TrainedModelRecord):
             self.export_summary_label.setText("请先选择要删除的模型。")
             return
 
-        reply = QMessageBox.question(
-            self,
-            "确认删除模型",
-            f"确认从数据库删除模型 {record.model_id}？\n\n"
-            "本操作只会移除 SQLite 中的模型记录，不会删除本地 model.joblib 或 metadata.json 文件。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        model_dir = Path(record.artifact_path).parent if record.artifact_path else None
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("删除模型")
+        message.setText(f"准备删除模型：{record.model_id}")
+        message.setInformativeText(
+            "请选择删除方式。\n\n"
+            "仅删除数据库记录：模型文件仍保留在本地。\n"
+            "删除数据库记录和模型目录：会同步删除该模型目录下的 model.joblib、metadata.json 等文件，不可恢复。\n\n"
+            f"模型目录：{model_dir if model_dir is not None else '未登记'}"
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        db_only_button = message.addButton("仅删除数据库记录", QMessageBox.ButtonRole.AcceptRole)
+        delete_files_button = message.addButton("删除数据库记录和模型目录", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = message.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+
+        clicked_button = message.clickedButton()
+        if clicked_button == cancel_button:
+            return
+
+        delete_local_files = clicked_button == delete_files_button
+        if delete_local_files and not self._delete_model_directory(model_dir):
             return
 
         delete_trained_model(record.model_id)
@@ -1068,9 +1140,37 @@ class TrainPage(QWidget):
         if not self.trained_models:
             self.training_status_badge.set_status("待模型", "info", size="sm")
             self.training_log.setPlainText("当前没有可用模型记录，请先执行训练生成真实模型。")
+        local_text = "本地模型目录已删除" if delete_local_files else "本地模型文件未删除"
         self.export_summary_label.setText(
-            f"已删除模型记录：{record.model_id}。本地模型文件未删除，可按需手动清理。"
+            f"已删除模型记录：{record.model_id}。{local_text}。"
         )
+
+    def _delete_model_directory(self, model_dir: Path | None) -> bool:
+        """安全删除项目模型目录下的单个模型目录。"""
+
+        if model_dir is None:
+            self.export_summary_label.setText("模型记录没有登记本地目录，数据库记录未删除。")
+            return False
+        try:
+            resolved_model_dir = model_dir.resolve()
+            models_root = MODELS_DIR.resolve()
+            resolved_model_dir.relative_to(models_root)
+        except (OSError, ValueError):
+            self.export_summary_label.setText(f"删除已取消：模型目录不在项目模型目录下：{model_dir}")
+            return False
+
+        if not resolved_model_dir.exists():
+            self.export_summary_label.setText("本地模型目录已不存在，将只删除数据库记录。")
+            return True
+        if not resolved_model_dir.is_dir():
+            self.export_summary_label.setText(f"删除已取消：模型路径不是目录：{resolved_model_dir}")
+            return False
+        try:
+            shutil.rmtree(resolved_model_dir)
+        except OSError as exc:
+            self.export_summary_label.setText(f"本地模型目录删除失败，数据库记录未删除：{exc}")
+            return False
+        return True
 
     def _on_dataset_changed(self) -> None:
         """切换数据集版本后刷新摘要信息。"""
@@ -1084,7 +1184,12 @@ class TrainPage(QWidget):
         else:
             self.task_type_box.setCurrentIndex(0)
 
-        self.model_name_input.setText(f"rf_type_{detail.version.version_id}")
+        default_model_name = f"rf_type_{detail.version.version_id}"
+        current_model_name = self.model_name_input.text().strip()
+        if not current_model_name or current_model_name == self._last_auto_model_name or not self._model_name_user_edited:
+            self.model_name_input.setText(default_model_name)
+            self._last_auto_model_name = default_model_name
+            self._model_name_user_edited = False
 
         split_counts = self._split_counts(detail)
         label_counts = self._actual_label_counts(detail)
@@ -1154,6 +1259,11 @@ class TrainPage(QWidget):
             self.training_status_badge.set_status("待接入", "warning", size="sm")
         elif not self._is_running():
             self.training_status_badge.set_status("待启动", "info", size="sm")
+
+    def _mark_model_name_edited(self) -> None:
+        """记录用户已经手动改过模型名称，避免数据集切换时覆盖。"""
+
+        self._model_name_user_edited = True
 
     def _set_running_state(self, running: bool) -> None:
         """根据训练状态统一启用或禁用控件。"""

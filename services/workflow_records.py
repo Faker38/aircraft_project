@@ -62,6 +62,19 @@ class LabelMappingRecord:
 
 
 @dataclass(frozen=True)
+class RawFileRecord:
+    """采集页展示和删除原始采集记录时使用的数据库记录。"""
+
+    file_path: str
+    file_name: str
+    sample_rate_hz: float
+    center_frequency_hz: float
+    bandwidth_hz: float
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True)
 class DatasetVersionRecord:
     """数据集页和训练页共用的数据集版本摘要。"""
 
@@ -80,13 +93,18 @@ class DatasetItemRecord:
 
     version_id: str
     sample_id: str
+    source_type: str
+    raw_file_path: str
     sample_file_path: str
     label_value: str
     label_type: str
     label_individual: str
     split: str
     source_file: str
+    sample_rate_hz: float
+    center_frequency_hz: float
     sample_count: int
+    device_id: str
     file_exists: bool
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,9 +12,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QHeaderView,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -23,7 +25,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 
-from config import BASE_DIR
+from config import BASE_DIR, RAW_DATA_DIR
 from services import (
     CapProbeError,
     CapProbeResult,
@@ -35,12 +37,16 @@ from services import (
     USRPDemoPreprocessResult,
     default_preprocess_output_dir,
     default_usrp_demo_output_dir,
+    delete_raw_file_record,
+    get_raw_file_delete_impact,
+    list_raw_files,
     list_usrp_iq_captures,
     probe_cap_file,
     preview_usrp_iq_file,
     resolve_default_model_weights_path,
     save_preprocess_result,
-    upsert_samples,
+    save_usrp_preprocess_result,
+    upsert_usrp_label_mappings,
 )
 from ui.preprocess_run_worker import PreprocessRunWorker
 from ui.usrp_demo_preprocess_worker import USRPDemoPreprocessWorker
@@ -52,6 +58,7 @@ class PreprocessPage(QWidget):
 
     navigate_requested = Signal(str)
     sample_records_generated = Signal(object)
+    workflow_records_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """初始化预处理页面。"""
@@ -119,39 +126,127 @@ class PreprocessPage(QWidget):
         return self._build_usrp_iq_records() if usrp_mode else self._build_cap_records()
 
     def _build_cap_records(self) -> list[dict[str, object]]:
-        """从工作区根目录自动扫描全部 CAP 文件。"""
+        """从本地文件和数据库记录合并展示全部 CAP 原始文件。"""
 
         workspace_root = BASE_DIR.parent
-        records: list[dict[str, object]] = []
-        cap_paths = sorted(workspace_root.glob("*.cap"), key=lambda item: (self._sample_kind_priority(item), item.name.lower()))
+        records_by_key: dict[str, dict[str, object]] = {}
+        cap_paths = sorted(
+            workspace_root.glob("*.cap"),
+            key=lambda item: (self._sample_kind_priority(item), item.name.lower()),
+        )
         for path in cap_paths:
             sample_kind = self._sample_kind_for_cap(path)
-            records.append(
-                {
-                    "name": path.name,
-                    "kind": sample_kind,
-                    "path": path,
-                    "location": "工作区根目录",
-                    "exists": True,
-                }
+            records_by_key[self._path_key(path)] = self._build_source_record(
+                path=path,
+                kind=sample_kind,
+                location="工作区根目录",
+                db_registered=False,
             )
-        return records
+        self._merge_database_raw_records(records_by_key, suffixes={".cap"})
+        return self._sorted_source_records(records_by_key.values())
 
     def _build_usrp_iq_records(self) -> list[dict[str, object]]:
-        """从 data/raw 自动扫描带同名 JSON 的 USRP IQ 文件。"""
+        """从本地文件和数据库记录合并展示 USRP IQ 原始文件。"""
 
-        records: list[dict[str, object]] = []
-        for path in list_usrp_iq_captures():
-            records.append(
-                {
-                    "name": path.name,
-                    "kind": "USRP IQ",
-                    "path": path,
-                    "location": "data/raw",
-                    "exists": True,
-                }
+        records_by_key: dict[str, dict[str, object]] = {}
+        for path in sorted(RAW_DATA_DIR.glob("*.iq"), key=lambda item: item.stat().st_mtime, reverse=True):
+            records_by_key[self._path_key(path)] = self._build_source_record(
+                path=path,
+                kind="USRP IQ",
+                location="data/raw",
+                db_registered=False,
             )
-        return records
+        for path in list_usrp_iq_captures():
+            key = self._path_key(path)
+            if key not in records_by_key:
+                records_by_key[key] = self._build_source_record(
+                    path=path,
+                    kind="USRP IQ",
+                    location="data/raw",
+                    db_registered=False,
+                )
+        self._merge_database_raw_records(records_by_key, suffixes={".iq", ".bin"})
+        return self._sorted_source_records(records_by_key.values())
+
+    def _merge_database_raw_records(self, records_by_key: dict[str, dict[str, object]], *, suffixes: set[str]) -> None:
+        """把数据库中仍有记录的原始文件合并到本地扫描列表。"""
+
+        for raw_record in list_raw_files():
+            path = Path(raw_record.file_path)
+            if path.suffix.lower() not in suffixes:
+                continue
+            key = self._path_key(path)
+            existing = records_by_key.get(key)
+            if existing is None:
+                records_by_key[key] = self._build_source_record(
+                    path=path,
+                    kind=("USRP IQ" if path.suffix.lower() == ".iq" else "USRP BIN")
+                    if path.suffix.lower() in {".iq", ".bin"}
+                    else (self._sample_kind_for_cap(path) if path.exists() else "CAP 原始"),
+                    location=self._display_location_for(path),
+                    db_registered=True,
+                )
+                continue
+            existing["db_registered"] = True
+            existing["status"] = self._source_record_status(path, db_registered=True)
+
+    def _build_source_record(
+        self,
+        *,
+        path: Path,
+        kind: str,
+        location: str,
+        db_registered: bool,
+    ) -> dict[str, object]:
+        """构造原始文件表的一行记录。"""
+
+        return {
+            "name": path.name,
+            "kind": kind,
+            "path": path,
+            "location": location,
+            "exists": path.exists(),
+            "db_registered": db_registered,
+            "status": self._source_record_status(path, db_registered=db_registered),
+        }
+
+    def _source_record_status(self, path: Path, *, db_registered: bool) -> str:
+        """返回原始文件表的用户可理解状态。"""
+
+        if not path.exists():
+            return "本地缺失" if db_registered else "文件缺失"
+        if path.suffix.lower() == ".bin":
+            return "留档"
+        if path.suffix.lower() == ".iq" and not path.with_suffix(".json").exists():
+            return "缺少 JSON"
+        return "已入库" if db_registered else "未入库"
+
+    def _display_location_for(self, path: Path) -> str:
+        """把文件位置压缩成适合表格展示的文本。"""
+
+        try:
+            return str(path.parent.resolve().relative_to(BASE_DIR.resolve()))
+        except ValueError:
+            return str(path.parent)
+
+    def _path_key(self, path: Path) -> str:
+        """生成跨本地扫描和数据库记录合并用的路径键。"""
+
+        try:
+            return str(path.resolve()).lower()
+        except OSError:
+            return str(path).lower()
+
+    def _sorted_source_records(self, records: object) -> list[dict[str, object]]:
+        """按状态和文件名整理原始文件表顺序。"""
+
+        return sorted(
+            (dict(record) for record in records),
+            key=lambda record: (
+                1 if str(record.get("status", "")) == "本地缺失" else 0,
+                str(record.get("name", "")).lower(),
+            )
+        )
 
     def _sample_kind_for_cap(self, path: Path) -> str:
         """根据文件名和大小给 CAP 样本做一个紧凑类型标记。"""
@@ -201,10 +296,16 @@ class PreprocessPage(QWidget):
         self.refresh_files_button = QPushButton("刷新文件列表")
         self.refresh_files_button.clicked.connect(self.refresh_input_records)
 
+        self.delete_raw_file_button = QPushButton("删除选中文件")
+        self.delete_raw_file_button.setObjectName("DangerButton")
+        self.delete_raw_file_button.clicked.connect(self._delete_selected_raw_file)
+        self.delete_raw_file_button.setEnabled(False)
+
         self.file_status_badge = StatusBadge("待选择", "info", size="sm")
 
         action_row.addWidget(self.probe_button)
         action_row.addWidget(self.refresh_files_button)
+        action_row.addWidget(self.delete_raw_file_button)
         action_row.addWidget(self.file_status_badge)
         action_row.addStretch(1)
 
@@ -226,7 +327,7 @@ class PreprocessPage(QWidget):
             path = Path(record["path"])
             exists = bool(record["exists"])
             size_text = self._format_bytes(path.stat().st_size) if exists else "-"
-            status_text = "可预处理" if exists else "文件缺失"
+            status_text = str(record.get("status") or ("未入库" if exists else "文件缺失"))
             values = [
                 str(record["name"]),
                 str(record["kind"]),
@@ -453,6 +554,11 @@ class PreprocessPage(QWidget):
         self.preview_field_table.verticalHeader().setVisible(False)
         self.preview_field_table.setAlternatingRowColors(True)
         self.preview_field_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.preview_field_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.preview_field_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.preview_field_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.preview_field_table.setColumnWidth(0, 150)
+        self.preview_field_table.setColumnWidth(1, 120)
         configure_scrollable(self.preview_field_table)
 
         field_rows = [
@@ -465,7 +571,7 @@ class PreprocessPage(QWidget):
         ]
         for row_index, row_data in enumerate(field_rows):
             for column, value in enumerate(row_data):
-                self.preview_field_table.setItem(row_index, column, QTableWidgetItem(value))
+                self._set_table_value(self.preview_field_table, row_index, column, value)
 
         self.preview_stats_table = QTableWidget(2, 5)
         self.preview_stats_table.setHorizontalHeaderLabels(["分量", "均值", "标准差", "最小值", "最大值"])
@@ -473,6 +579,8 @@ class PreprocessPage(QWidget):
         self.preview_stats_table.verticalHeader().setVisible(False)
         self.preview_stats_table.setAlternatingRowColors(True)
         self.preview_stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for column in range(self.preview_stats_table.columnCount()):
+            self.preview_stats_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         configure_scrollable(self.preview_stats_table)
         stats_rows = [
             ("I 分量", "-", "-", "-", "-"),
@@ -480,7 +588,7 @@ class PreprocessPage(QWidget):
         ]
         for row_index, row_data in enumerate(stats_rows):
             for column, value in enumerate(row_data):
-                self.preview_stats_table.setItem(row_index, column, QTableWidgetItem(value))
+                self._set_table_value(self.preview_stats_table, row_index, column, value)
 
         self.preview_iq_table = QTableWidget(0, 3)
         self.preview_iq_table.setHorizontalHeaderLabels(["序号", "I", "Q"])
@@ -488,6 +596,8 @@ class PreprocessPage(QWidget):
         self.preview_iq_table.verticalHeader().setVisible(False)
         self.preview_iq_table.setAlternatingRowColors(True)
         self.preview_iq_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for column in range(self.preview_iq_table.columnCount()):
+            self.preview_iq_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         configure_scrollable(self.preview_iq_table)
 
         section.body_layout.addLayout(info_form)
@@ -559,6 +669,19 @@ class PreprocessPage(QWidget):
         self.segment_table.verticalHeader().setVisible(False)
         self.segment_table.setAlternatingRowColors(True)
         self.segment_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.segment_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        for column in range(self.segment_table.columnCount()):
+            self.segment_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        self.segment_table.setColumnWidth(0, 110)
+        self.segment_table.setColumnWidth(1, 95)
+        self.segment_table.setColumnWidth(2, 95)
+        self.segment_table.setColumnWidth(3, 95)
+        self.segment_table.setColumnWidth(4, 130)
+        self.segment_table.setColumnWidth(5, 110)
+        self.segment_table.setColumnWidth(6, 85)
+        self.segment_table.setColumnWidth(7, 85)
+        self.segment_table.setColumnWidth(8, 260)
+        self.segment_table.setColumnWidth(9, 90)
         configure_scrollable(self.segment_table)
 
         log_and_table_row.addWidget(self.log_output, 2)
@@ -584,23 +707,125 @@ class PreprocessPage(QWidget):
         if record is None:
             self.probe_button.setEnabled(False)
             self.start_button.setEnabled(False)
+            self.delete_raw_file_button.setEnabled(False)
             self.file_status_badge.set_status("未选择", "warning", size="sm")
             self.file_status_label.setText("请选择一条原始文件记录后，再执行预览或预处理。")
             return
 
         path = Path(record["path"])
         exists = bool(record["exists"])
-        self.probe_button.setEnabled(exists and not self._is_running())
-        self.start_button.setEnabled(exists and not self._is_running())
-        if exists:
+        status_text = str(record.get("status", ""))
+        can_preprocess = exists and (not self._is_usrp_demo_mode() or status_text in {"已入库", "未入库"})
+        self.probe_button.setEnabled(can_preprocess and not self._is_running())
+        self.start_button.setEnabled(can_preprocess and not self._is_running())
+        self.delete_raw_file_button.setEnabled(not self._is_running())
+        if can_preprocess:
             self.file_status_badge.set_status("可预处理", "success", size="sm")
             action_text = "元数据预览或演示预处理" if self._is_usrp_demo_mode() else "头信息预览或 CAP 预处理"
             self.file_status_label.setText(f"已选文件：{path.name} | 路径：{path} | 可继续执行{action_text}。")
             if not self.output_dir_input.text().strip():
                 self.output_dir_input.setText(str(self._default_output_dir_for(path)))
+        elif exists:
+            self.file_status_badge.set_status(status_text or "不可预处理", "warning", size="sm")
+            self.file_status_label.setText(
+                f"已选文件：{path.name} | 路径：{path} | 当前状态：{status_text or '不可预处理'}。"
+                "USRP 演示预处理只接收 .iq + 同名 .json，.bin 仅作为采集留档。"
+            )
         else:
             self.file_status_badge.set_status("缺失", "danger", size="sm")
             self.file_status_label.setText(f"未找到文件：{path}。请确认样本文件仍在原位置。")
+
+    def _delete_selected_raw_file(self) -> None:
+        """删除当前原始文件的数据库记录，可选同步删除本地原始文件。"""
+
+        record = self._selected_record()
+        if record is None:
+            self.file_status_label.setText("请先选择要删除的原始文件。")
+            return
+
+        path = Path(record["path"])
+        impact = get_raw_file_delete_impact(str(path))
+        local_files = self._raw_local_files_for_delete(path)
+        local_file_lines = [
+            f"- {file_path}" + ("" if file_path.exists() else "（本地已不存在）")
+            for file_path in local_files
+        ]
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("删除原始文件")
+        message.setText(f"准备删除原始文件：{path.name}")
+        message.setInformativeText(
+            "请选择删除方式。\n\n"
+            "数据库影响："
+            f"原始记录 {impact.get('raw_files', 0)} 条，"
+            f"预处理任务 {impact.get('preprocess_tasks', 0)} 条，"
+            f"样本 {impact.get('samples', 0)} 条，"
+            f"数据集关联 {impact.get('dataset_items', 0)} 条，"
+            f"更新版本 {impact.get('dataset_versions_updated', 0)} 个，"
+            f"删除空版本 {impact.get('dataset_versions_deleted', 0)} 个。\n\n"
+            "本地文件清单：\n"
+            + "\n".join(local_file_lines)
+            + "\n\n选择删除本地文件后不可恢复。"
+        )
+        db_only_button = message.addButton("仅删除数据库记录", QMessageBox.ButtonRole.AcceptRole)
+        delete_files_button = message.addButton("删除数据库记录和本地文件", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = message.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+
+        clicked_button = message.clickedButton()
+        if clicked_button == cancel_button:
+            self.file_status_label.setText("已取消删除操作。")
+            return
+
+        delete_local_files = clicked_button == delete_files_button
+        if delete_local_files and not self._delete_local_raw_files(local_files):
+            return
+
+        try:
+            counts = delete_raw_file_record(str(path))
+        except Exception as exc:
+            self.file_status_label.setText(f"本地文件处理完成，但数据库记录删除失败：{exc}")
+            return
+
+        self.refresh_input_records()
+        local_text = "本地文件已删除；" if delete_local_files else "本地文件已保留；"
+        self.file_status_label.setText(
+            f"已删除 {path.name} 的数据库关联："
+            f"原始记录 {counts.get('raw_files', 0)} 条，"
+            f"预处理任务 {counts.get('preprocess_tasks', 0)} 条，"
+            f"样本 {counts.get('samples', 0)} 条，"
+            f"数据集关联 {counts.get('dataset_items', 0)} 条。{local_text}"
+        )
+        self.workflow_records_changed.emit()
+
+    def _raw_local_files_for_delete(self, path: Path) -> list[Path]:
+        """返回删除一个原始文件时允许一并处理的本地文件列表。"""
+
+        files = [path]
+        if path.suffix.lower() in {".iq", ".bin"}:
+            files.append(path.with_suffix(".json"))
+        return files
+
+    def _delete_local_raw_files(self, file_paths: list[Path]) -> bool:
+        """删除允许范围内的本地原始文件，失败时不继续清数据库。"""
+
+        existing_files = [path for path in file_paths if path.exists()]
+        invalid_files = [path for path in existing_files if not path.is_file()]
+        if invalid_files:
+            self.file_status_label.setText(
+                "删除已取消：以下路径不是普通文件，系统不会自动删除："
+                + "；".join(str(path) for path in invalid_files)
+            )
+            return False
+
+        try:
+            for path in existing_files:
+                path.unlink()
+        except OSError as exc:
+            self.file_status_label.setText(f"本地文件删除失败，数据库记录未删除：{exc}")
+            return False
+        return True
 
     def _load_selected_cap_preview(self) -> None:
         """读取当前选中 CAP 文件的头信息并刷新预览区。"""
@@ -915,9 +1140,14 @@ class PreprocessPage(QWidget):
             # 只有有效片段被整理成样本记录后，才允许进入数据集管理继续流程。
             if result.sample_records:
                 self.sample_records_generated.emit(result.sample_records)
-                self.config_status_label.setText(
-                    f"本次已同步 {len(result.sample_records)} 条候选样本记录，可直接进入数据集管理进行标注确认。"
-                )
+                if isinstance(result, USRPDemoPreprocessResult):
+                    self.config_status_label.setText(
+                        f"本次已同步 {len(result.sample_records)} 条 USRP 候选样本，设备映射表已按新频点自动补齐。"
+                    )
+                else:
+                    self.config_status_label.setText(
+                        f"本次已同步 {len(result.sample_records)} 条候选样本记录，可直接进入数据集管理进行标注确认。"
+                    )
             else:
                 self.config_status_label.setText("本次未生成可同步的有效样本记录，可继续调整阈值后重试。")
         else:
@@ -945,7 +1175,13 @@ class PreprocessPage(QWidget):
 
         if isinstance(result, USRPDemoPreprocessResult):
             try:
-                upsert_samples(result.sample_records)
+                save_usrp_preprocess_result(result)
+                mapping_count = upsert_usrp_label_mappings(result.sample_records)
+                if mapping_count:
+                    self.config_status_label.setText(
+                        f"USRP 演示预处理已写入样本，并自动补齐 {mapping_count} 条设备映射。"
+                    )
+                self.workflow_records_changed.emit()
             except Exception as exc:
                 self.config_status_label.setText(f"USRP 演示预处理已完成，但数据库写入失败：{exc}")
             return
@@ -954,6 +1190,7 @@ class PreprocessPage(QWidget):
             return
         try:
             save_preprocess_result(self._last_run_config, result)
+            self.workflow_records_changed.emit()
         except Exception as exc:
             self.config_status_label.setText(f"预处理已完成，但数据库写入失败：{exc}")
 
@@ -968,6 +1205,7 @@ class PreprocessPage(QWidget):
 
         self.segment_table.setRowCount(len(segments))
         for row_index, segment in enumerate(segments):
+            output_file_path = str(segment.get("output_file_path", ""))
             values = [
                 str(segment.get("segment_id", "")),
                 str(segment.get("start_sample", "")),
@@ -977,18 +1215,28 @@ class PreprocessPage(QWidget):
                 f"{float(segment.get('bandwidth_hz', 0.0)):.1f}",
                 f"{float(segment.get('snr_db', 0.0)):.2f}",
                 f"{float(segment.get('score', 0.0)):.4f}",
-                str(segment.get("output_file_path", "")),
+                output_file_path,
                 str(segment.get("status", "")),
             ]
             for column, value in enumerate(values):
                 self._set_table_value(self.segment_table, row_index, column, value)
+            first_item = self.segment_table.item(row_index, 0)
+            if first_item is not None:
+                first_item.setData(Qt.ItemDataRole.UserRole, output_file_path)
 
     def _set_running_state(self, running: bool) -> None:
         """根据后台任务状态统一启用或禁用控件。"""
 
         self.probe_button.setEnabled(not running)
         self.refresh_files_button.setEnabled(not running)
-        self.start_button.setEnabled(not running and self._selected_record() is not None and bool(self._selected_record()["exists"]))
+        selected_record = self._selected_record()
+        can_preprocess = False
+        if selected_record is not None:
+            status_text = str(selected_record.get("status", ""))
+            can_preprocess = bool(selected_record["exists"]) and (
+                not self._is_usrp_demo_mode() or status_text in {"已入库", "未入库"}
+            )
+        self.start_button.setEnabled(not running and can_preprocess)
         self.file_table.setEnabled(not running)
         self.slice_length_input.setEnabled(not running)
         self.threshold_input.setEnabled(not running)
@@ -999,6 +1247,8 @@ class PreprocessPage(QWidget):
         self.bandpass_checkbox.setEnabled(not running)
         self.output_dir_input.setEnabled(not running)
         self.model_path_input.setEnabled(not running)
+        if hasattr(self, "delete_raw_file_button"):
+            self.delete_raw_file_button.setEnabled(not running and self._selected_record() is not None)
 
         if running:
             self.process_progress.setRange(0, 0)
@@ -1041,6 +1291,18 @@ class PreprocessPage(QWidget):
             item = QTableWidgetItem()
             table.setItem(row, column, item)
         item.setText(value)
+        item.setToolTip(value)
+        is_path_column = table in (getattr(self, "file_table", None), getattr(self, "segment_table", None)) and column in {0, 8}
+        alignment = Qt.AlignmentFlag.AlignVCenter | (
+            Qt.AlignmentFlag.AlignLeft if is_path_column else Qt.AlignmentFlag.AlignCenter
+        )
+        item.setTextAlignment(alignment)
+
+    def _item_text(self, table: QTableWidget, row: int, column: int) -> str:
+        """读取一个表格单元格的紧凑文本。"""
+
+        item = table.item(row, column)
+        return item.text().strip() if item is not None else ""
 
     def _set_preview_field_labels(self, rows: list[tuple[str, str]]) -> None:
         """刷新预览字段表的字段名和来源说明。"""

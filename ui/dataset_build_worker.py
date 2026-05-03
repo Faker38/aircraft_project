@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+import random
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from services import DatasetVersionRecord, SampleRecord, create_dataset_version, write_dataset_manifest
+
+SPLIT_RANDOM_SEED = 42
+SPLIT_NAMES = ("train", "val", "test")
 
 
 def collect_dataset_candidates(
@@ -59,44 +63,143 @@ def calculate_split_counts(total: int, train_ratio: int, val_ratio: int, test_ra
 
 
 def build_split_values(
-    sample_labels: list[tuple[str, str]],
+    sample_records: list[SampleRecord],
     *,
+    task_type: str,
+    strategy: str,
     train_ratio: int,
     val_ratio: int,
     test_ratio: int,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, str]:
-    """按标签内顺序生成训练、验证、测试划分。"""
+    """按用户选择的真实策略生成训练、验证、测试划分。"""
 
-    grouped: dict[str, list[str]] = {}
-    for sample_id, label in sample_labels:
-        grouped.setdefault(label, []).append(sample_id)
+    grouped: dict[str, list[SampleRecord]] = {}
+    for record in sample_records:
+        label = _label_for_task(record, task_type)
+        if label:
+            grouped.setdefault(label, []).append(record)
 
     split_values: dict[str, str] = {}
-    total = len(sample_labels)
+    total = sum(len(records) for records in grouped.values())
     processed = 0
     if progress_callback is not None:
         progress_callback(0, max(total, 1), "正在计算训练/验证/测试划分")
 
-    for sample_ids in grouped.values():
-        train_count, val_count, test_count = calculate_split_counts(
-            len(sample_ids),
-            train_ratio,
-            val_ratio,
-            test_ratio,
-        )
-
-        for index, sample_id in enumerate(sample_ids):
-            if index < train_count:
-                split_values[sample_id] = "train"
-            elif index < train_count + val_count:
-                split_values[sample_id] = "val"
-            elif index < train_count + val_count + test_count:
-                split_values[sample_id] = "test"
-            processed += 1
+    rng = random.Random(SPLIT_RANDOM_SEED)
+    for label, records in sorted(grouped.items(), key=lambda item: item[0]):
+        if strategy == "按设备个体隔离":
+            label_split_values = _build_device_isolated_split(
+                label,
+                records,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                rng=rng,
+            )
+        else:
+            label_split_values = _build_stratified_random_split(
+                records,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                rng=rng,
+            )
+        split_values.update(label_split_values)
+        processed += len(records)
 
         if progress_callback is not None:
             progress_callback(processed, max(total, 1), "正在整理样本划分")
+
+    return split_values
+
+
+def _label_for_task(record: SampleRecord, task_type: str) -> str:
+    """返回当前任务使用的标签字段。"""
+
+    return record.label_type if task_type == "类型识别" else record.label_individual
+
+
+def _build_stratified_random_split(
+    records: list[SampleRecord],
+    *,
+    train_ratio: int,
+    val_ratio: int,
+    test_ratio: int,
+    rng: random.Random,
+) -> dict[str, str]:
+    """在每个标签内随机分层划分，随机种子固定。"""
+
+    sample_ids = [record.sample_id for record in sorted(records, key=lambda item: item.sample_id)]
+    rng.shuffle(sample_ids)
+    train_count, val_count, _ = calculate_split_counts(
+        len(sample_ids),
+        train_ratio,
+        val_ratio,
+        test_ratio,
+    )
+    split_values: dict[str, str] = {}
+    for index, sample_id in enumerate(sample_ids):
+        if index < train_count:
+            split_values[sample_id] = "train"
+        elif index < train_count + val_count:
+            split_values[sample_id] = "val"
+        else:
+            split_values[sample_id] = "test"
+    return split_values
+
+
+def _build_device_isolated_split(
+    label: str,
+    records: list[SampleRecord],
+    *,
+    train_ratio: int,
+    val_ratio: int,
+    test_ratio: int,
+    rng: random.Random,
+) -> dict[str, str]:
+    """按设备编号分组划分，保证同一设备不会跨 train/val/test。"""
+
+    target_counts = calculate_split_counts(
+        len(records),
+        train_ratio,
+        val_ratio,
+        test_ratio,
+    )
+    active_targets = [
+        (split_name, target_count)
+        for split_name, target_count in zip(SPLIT_NAMES, target_counts)
+        if target_count > 0
+    ]
+    grouped_by_device: dict[str, list[SampleRecord]] = {}
+    for record in sorted(records, key=lambda item: item.sample_id):
+        device_id = record.device_id.strip() or "未指定设备"
+        grouped_by_device.setdefault(device_id, []).append(record)
+
+    if len(grouped_by_device) < len(active_targets):
+        raise ValueError(
+            f"标签 {label} 只有 {len(grouped_by_device)} 个设备编号，"
+            f"无法按设备个体隔离切出 {len(active_targets)} 个数据集合；"
+            "请补充更多设备样本，或改用“按样本随机分层”。"
+        )
+
+    devices = sorted(grouped_by_device)
+    rng.shuffle(devices)
+    split_values: dict[str, str] = {}
+    for split_index, (split_name, target_count) in enumerate(active_targets):
+        is_last_split = split_index == len(active_targets) - 1
+        remaining_slots = len(active_targets) - split_index - 1
+        assigned_count = 0
+        while devices and (
+            is_last_split
+            or not assigned_count
+            or (assigned_count < target_count and len(devices) > remaining_slots)
+        ):
+            device_id = devices.pop(0)
+            device_records = grouped_by_device[device_id]
+            for record in device_records:
+                split_values[record.sample_id] = split_name
+            assigned_count += len(device_records)
 
     return split_values
 
@@ -156,7 +259,9 @@ class DatasetBuildWorker(QObject):
                 source_summary = "预处理样本"
 
             split_values = build_split_values(
-                sample_labels,
+                selected_records,
+                task_type=self.task_type,
+                strategy=self.strategy,
                 train_ratio=self.train_ratio,
                 val_ratio=self.val_ratio,
                 test_ratio=self.test_ratio,

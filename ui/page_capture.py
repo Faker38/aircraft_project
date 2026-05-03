@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -42,6 +43,7 @@ from services import (
     USRPCaptureConfig,
     USRPCaptureResult,
     USRPDiagnosticsResult,
+    delete_raw_file_record,
     format_b210_preflight_summary,
     resolve_uhd_tool,
     save_raw_capture_record,
@@ -64,6 +66,7 @@ class CapturePage(QWidget):
 
     connection_state_changed = Signal(bool, str)
     raw_capture_completed = Signal(object)
+    raw_records_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Initialize the capture page."""
@@ -263,6 +266,12 @@ class CapturePage(QWidget):
 
         self.usrp_executable_input = QLineEdit(DEFAULT_USRP_EXECUTABLE)
         self.usrp_executable_input.textChanged.connect(self._update_usrp_command_preview)
+        executable_hint = QLabel(
+            "rx_samples_to_file 是 UHD 安装后自带的采集示例程序；"
+            "可直接填命令名，软件会自动查找 PATH 和 C:/Program Files/UHD。新电脑建议先点 B210 预检。"
+        )
+        executable_hint.setObjectName("MutedText")
+        executable_hint.setWordWrap(True)
 
         self.usrp_device_args_input = QLineEdit(DEFAULT_USRP_DEVICE_ARGS)
         self.usrp_device_args_input.setPlaceholderText("例如 type=b200")
@@ -273,6 +282,7 @@ class CapturePage(QWidget):
         self.usrp_command_preview.setWordWrap(True)
 
         form_layout.addRow("采集程序", self.usrp_executable_input)
+        form_layout.addRow("", executable_hint)
         form_layout.addRow("设备地址", self.usrp_device_args_input)
         form_layout.addRow("命令预览", self.usrp_command_preview)
 
@@ -462,7 +472,16 @@ class CapturePage(QWidget):
         self.files_table.verticalHeader().setVisible(False)
         self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.files_table.itemSelectionChanged.connect(self._sync_delete_file_button)
         configure_scrollable(self.files_table)
+
+        file_action_row = QHBoxLayout()
+        file_action_row.setSpacing(10)
+        self.delete_file_button = QPushButton("删除选中记录")
+        self.delete_file_button.clicked.connect(self._delete_selected_record)
+        self.delete_file_button.setEnabled(False)
+        file_action_row.addWidget(self.delete_file_button)
+        file_action_row.addStretch(1)
 
         section.body_layout.addWidget(
             VisualInfoStrip(
@@ -473,6 +492,7 @@ class CapturePage(QWidget):
             )
         )
         section.body_layout.addWidget(self.files_table)
+        section.body_layout.addLayout(file_action_row)
         return section
 
     def _populate_mock_rows(self) -> None:
@@ -485,14 +505,22 @@ class CapturePage(QWidget):
         for row_data in rows:
             self._append_row(row_data)
 
-    def _append_row(self, row_data: list[str]) -> None:
+    def _append_row(self, row_data: list[str], *, file_path: str = "") -> None:
         """Append one row to the file table."""
 
         row_index = self.files_table.rowCount()
         self.files_table.insertRow(row_index)
         for column, value in enumerate(row_data):
-            self.files_table.setItem(row_index, column, QTableWidgetItem(value))
+            item = QTableWidgetItem(value)
+            item.setToolTip(value)
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if column == 0 else Qt.AlignmentFlag.AlignCenter)
+            )
+            if column == 0 and file_path:
+                item.setData(Qt.ItemDataRole.UserRole, file_path)
+            self.files_table.setItem(row_index, column, item)
         self._refresh_summary_metrics()
+        self._sync_delete_file_button()
 
     def _apply_mode_change(self) -> None:
         """Switch the capture page between 3943B demo and USRP modes."""
@@ -820,10 +848,12 @@ class CapturePage(QWidget):
                 f"{result.sample_rate_hz / 1_000_000:.3f} MHz / {result.bandwidth_hz / 1_000_000:.3f} MHz",
                 f"USRP / {self.usrp_device_label_input.text().strip() or 'usrp'}",
                 "原始",
-            ]
+            ],
+            file_path=result.output_file_path,
         )
         self._append_log(f"已登记原始采集文件：{result.output_file_path}")
         self.raw_capture_completed.emit(result)
+        self.raw_records_changed.emit()
 
     def _on_usrp_capture_cancelled(self, message: str) -> None:
         """Render one cancelled USRP capture result."""
@@ -860,6 +890,72 @@ class CapturePage(QWidget):
         self.mode_metric.set_value("USRP 真实采集" if self._is_usrp_mode() else "3943B 演示")
         self.file_metric.set_value(str(self.files_table.rowCount()))
 
+    def _sync_delete_file_button(self) -> None:
+        """根据当前选择状态刷新原始记录删除按钮。"""
+
+        if not hasattr(self, "delete_file_button"):
+            return
+        self.delete_file_button.setEnabled(self.files_table.currentRow() >= 0 and self._capture_thread is None)
+
+    def _selected_file_path(self) -> str:
+        """返回当前记录对应的数据库文件路径。"""
+
+        row = self.files_table.currentRow()
+        if row < 0:
+            return ""
+        item = self.files_table.item(row, 0)
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _delete_selected_record(self) -> None:
+        """只删除数据库中的原始记录和派生关联，不删除本地文件。"""
+
+        row = self.files_table.currentRow()
+        if row < 0:
+            self._append_log("请先选择要删除的记录。")
+            return
+
+        file_name = self.files_table.item(row, 0).text() if self.files_table.item(row, 0) else "当前记录"
+        file_path = self._selected_file_path()
+        if not file_path:
+            reply = QMessageBox.question(
+                self,
+                "删除样例记录",
+                f"记录 {file_name} 没有入库路径，仅会从当前表格移除。\n\n是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self.files_table.removeRow(row)
+            self._append_log(f"已从表格移除样例记录：{file_name}")
+            self._refresh_summary_metrics()
+            self._sync_delete_file_button()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除记录",
+            f"确认从数据库删除原始记录 {file_name}？\n\n"
+            "本操作只会删除 raw_files、关联预处理任务、样本和数据集关联，不会删除本地 .iq/.json/.cap 文件。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        counts = delete_raw_file_record(file_path)
+        self.files_table.removeRow(row)
+        self._append_log(
+            "已删除数据库记录："
+            f"原始 {counts.get('raw_files', 0)} 条，"
+            f"预处理任务 {counts.get('preprocess_tasks', 0)} 条，"
+            f"样本 {counts.get('samples', 0)} 条，"
+            f"数据集关联 {counts.get('dataset_items', 0)} 条。本地文件未删除。"
+        )
+        self._refresh_summary_metrics()
+        self._sync_delete_file_button()
+        self.raw_records_changed.emit()
+
     def _update_connection_badge_text(self) -> None:
         """Update the connection badge text for the current mode."""
 
@@ -893,3 +989,5 @@ class CapturePage(QWidget):
         self.diagnostics_button.setEnabled(not running and self._diagnostics_thread is None)
         self.connection_stack.setEnabled(not running)
         self.parameters_stack.setEnabled(not running)
+        if hasattr(self, "delete_file_button"):
+            self.delete_file_button.setEnabled(not running and self.files_table.currentRow() >= 0)

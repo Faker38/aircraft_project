@@ -98,11 +98,15 @@ def train_type_model(
         if split_counts.get(split_name, 0) <= 0:
             raise ModelServiceError(f"当前版本缺少 {split_name} 集样本，请先调整数据集划分。")
 
+    training_domain = _build_training_domain(detail.items)
     logs = [
         f"[Start] 开始训练类型识别模型 | 数据集版本 {version_id}",
         f"[Info] Manifest: {manifest_path}",
         f"[Info] 标签数: {len(label_counts)} | 标签分布: {dict(label_counts)}",
         f"[Info] 数据划分: train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
+        f"[Info] 训练适用域: 来源={training_domain.get('source_types', [])} / "
+        f"中心频率={_format_range(training_domain.get('center_frequency_hz_range'))} Hz / "
+        f"采样率={_format_range(training_domain.get('sample_rate_hz_range'))} Hz",
         f"[Info] 训练参数: random_state={int(random_state)} / n_estimators={int(n_estimators)} / max_depth={_format_max_depth(max_depth)}",
         "[Info] 当前训练为可复现实验：相同版本、参数与随机种子下，结果稳定重复是预期行为。",
     ]
@@ -202,6 +206,7 @@ def train_type_model(
         "feature_names": list(FEATURE_NAMES),
         "label_space": label_space,
         "trained_at": _now_text(),
+        "training_domain": training_domain,
         "training_config": {
             "random_state": int(random_state),
             "n_estimators": int(n_estimators),
@@ -219,6 +224,7 @@ def train_type_model(
         "split_counts": {key: int(value) for key, value in split_counts.items()},
         "label_counts": {key: int(value) for key, value in label_counts.items()},
         "confusion_matrix": matrix.tolist(),
+        "training_domain": training_domain,
         "random_state": int(random_state),
         "n_estimators": int(n_estimators),
         "max_depth": resolved_max_depth,
@@ -230,6 +236,7 @@ def train_type_model(
         "model_kind": "RandomForest",
         "label_space": label_space,
         "feature_names": list(FEATURE_NAMES),
+        "training_domain": training_domain,
         "training_config": {
             "random_state": int(random_state),
             "n_estimators": int(n_estimators),
@@ -365,6 +372,45 @@ def _format_max_depth(max_depth: int | None) -> str:
     return str(int(max_depth))
 
 
+def _build_training_domain(items: list[Any]) -> dict[str, Any]:
+    """汇总模型训练样本的来源、频率和采样率适用范围。"""
+
+    source_types = sorted({str(getattr(item, "source_type", "")) for item in items if getattr(item, "source_type", "")})
+    device_ids = sorted({str(getattr(item, "device_id", "")) for item in items if getattr(item, "device_id", "")})
+    center_frequencies = [
+        float(getattr(item, "center_frequency_hz", 0.0))
+        for item in items
+        if float(getattr(item, "center_frequency_hz", 0.0) or 0.0) > 0.0
+    ]
+    sample_rates = [
+        float(getattr(item, "sample_rate_hz", 0.0))
+        for item in items
+        if float(getattr(item, "sample_rate_hz", 0.0) or 0.0) > 0.0
+    ]
+    return {
+        "source_types": source_types,
+        "device_count": len(device_ids),
+        "center_frequency_hz_range": _range_payload(center_frequencies),
+        "sample_rate_hz_range": _range_payload(sample_rates),
+    }
+
+
+def _range_payload(values: list[float]) -> dict[str, float] | None:
+    """把数值列表压缩为 min/max 范围。"""
+
+    if not values:
+        return None
+    return {"min": float(min(values)), "max": float(max(values))}
+
+
+def _format_range(value: object) -> str:
+    """把适用域范围转成日志里的紧凑文本。"""
+
+    if not isinstance(value, dict):
+        return "-"
+    return f"{float(value.get('min', 0.0)):.0f}-{float(value.get('max', 0.0)):.0f}"
+
+
 def extract_iq_features(sample_file_path: str | Path) -> np.ndarray:
     """从一条 IQ 样本文件提取稳定、轻量的机器学习特征。"""
 
@@ -432,8 +478,12 @@ def _ensure_complex_iq(raw: np.ndarray) -> np.ndarray:
 def _build_model_id(raw_name: str) -> str:
     """生成可落盘、可入库的模型编号。"""
 
-    base_name = re.sub(r"[^0-9A-Za-z_]+", "_", raw_name.strip()) or "rf_type_model"
-    base_name = base_name.strip("_") or "rf_type_model"
+    illegal_chars = set('<>:"/\\|?*\r\n\t')
+    cleaned_chars = [
+        "_" if char.isspace() or char in illegal_chars else char
+        for char in raw_name.strip()
+    ]
+    base_name = re.sub(r"_+", "_", "".join(cleaned_chars)).strip(" ._-") or "rf_type_model"
     return f"{base_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 

@@ -20,18 +20,22 @@ from services.workflow_records import (
     DatasetVersionDetail,
     DatasetVersionRecord,
     LabelMappingRecord,
+    RawFileRecord,
     SampleRecord,
     TrainedModelRecord,
 )
 
 
 DB_PATH = DB_DIR / "aircraft_project.sqlite3"
+DATASET_SPLIT_RANDOM_SEED = 42
 
 DEFAULT_LABEL_MAPPINGS: tuple[LabelMappingRecord, ...] = (
     LabelMappingRecord("usrp_2412M", "频点A", "", "USRP 演示频点 2412 MHz"),
     LabelMappingRecord("usrp_2437M", "频点B", "", "USRP 演示频点 2437 MHz"),
     LabelMappingRecord("usrp_2462M", "频点C", "", "USRP 演示频点 2462 MHz"),
 )
+
+USRP_AUTO_MAPPING_NOTE_PREFIX = "USRP 自动映射"
 
 
 def init_database() -> None:
@@ -225,6 +229,52 @@ def upsert_samples(records: list[SampleRecord]) -> None:
             )
 
 
+def save_usrp_preprocess_result(result: Any) -> None:
+    """保存一次 USRP IQ 演示预处理任务及其样本记录。"""
+
+    init_database()
+    now = _now_text()
+    input_info = result.input_info
+    with _connect() as conn:
+        raw_file_id = _upsert_raw_file(
+            conn,
+            file_path=str(input_info.path),
+            sample_rate_hz=float(input_info.sample_rate_hz),
+            center_frequency_hz=float(input_info.center_frequency_hz),
+            bandwidth_hz=float(input_info.bandwidth_hz),
+            now=now,
+        )
+        params_payload = {
+            "mode": "usrp_demo_preprocess",
+            "metadata_path": str(input_info.metadata_path),
+            "gain_db": float(input_info.gain_db),
+            "duration_s": float(input_info.duration_s),
+            "antenna": input_info.antenna,
+            "iq_pair_count": int(input_info.iq_pair_count),
+        }
+        cursor = conn.execute(
+            """
+            INSERT INTO preprocess_tasks (
+                raw_file_id, started_at, status, message, candidate_segment_count,
+                detected_segment_count, output_sample_count, output_dir, params_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_file_id,
+                now,
+                "完成" if result.success else "失败",
+                str(result.message),
+                int(getattr(result, "candidate_segment_count", 0)),
+                int(result.detected_segment_count),
+                int(result.output_sample_count),
+                str(result.sample_output_dir),
+                json.dumps(params_payload, ensure_ascii=False),
+            ),
+        )
+        task_id = int(cursor.lastrowid)
+        _upsert_samples(conn, result.sample_records, raw_file_id=raw_file_id, preprocess_task_id=task_id, now=now)
+
+
 def save_raw_capture_record(
     *,
     file_path: str,
@@ -244,6 +294,84 @@ def save_raw_capture_record(
             bandwidth_hz=bandwidth_hz,
             now=_now_text(),
         )
+
+
+def list_raw_files() -> list[RawFileRecord]:
+    """读取全部原始采集文件数据库记录。"""
+
+    init_database()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT file_path, file_name, sample_rate_hz, center_frequency_hz,
+                   bandwidth_hz, created_at, updated_at
+            FROM raw_files
+            ORDER BY created_at, file_name
+            """
+        ).fetchall()
+    return [
+        RawFileRecord(
+            file_path=row["file_path"],
+            file_name=row["file_name"],
+            sample_rate_hz=float(row["sample_rate_hz"]),
+            center_frequency_hz=float(row["center_frequency_hz"]),
+            bandwidth_hz=float(row["bandwidth_hz"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        for row in rows
+    ]
+
+
+def upsert_usrp_label_mappings(records: list[SampleRecord]) -> int:
+    """按 USRP 预处理样本自动补齐设备编号映射，不覆盖人工非空映射。"""
+
+    usrp_records: dict[str, SampleRecord] = {}
+    for record in records:
+        if not record.device_id.startswith("usrp_") or not record.label_type:
+            continue
+        usrp_records[record.device_id] = record
+    if not usrp_records:
+        return 0
+
+    init_database()
+    now = _now_text()
+    changed_count = 0
+    with _connect() as conn:
+        for device_id, record in sorted(usrp_records.items()):
+            existing = conn.execute(
+                """
+                SELECT label_type, label_individual, note
+                FROM label_mappings
+                WHERE device_id = ?
+                """,
+                (device_id,),
+            ).fetchone()
+            label_individual = record.label_individual or f"{record.label_type}_001"
+            note = f"{USRP_AUTO_MAPPING_NOTE_PREFIX}：{device_id}"
+            should_update = existing is None
+            if existing is not None:
+                has_human_label = bool(existing["label_type"] or existing["label_individual"])
+                is_auto_mapping = str(existing["note"] or "").startswith(USRP_AUTO_MAPPING_NOTE_PREFIX)
+                should_update = (not has_human_label) or is_auto_mapping
+            if not should_update:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO label_mappings (
+                    device_id, label_type, label_individual, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    label_type = excluded.label_type,
+                    label_individual = excluded.label_individual,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (device_id, record.label_type, label_individual, note, now, now),
+            )
+            changed_count += 1
+    return changed_count
 
 
 def list_label_mappings() -> list[LabelMappingRecord]:
@@ -381,9 +509,62 @@ def delete_sample(sample_id: str) -> None:
 
     init_database()
     with _connect() as conn:
-        # 样本可能已经被某些数据集版本引用，必须先清理关联表。
-        conn.execute("DELETE FROM dataset_items WHERE sample_id = ?", (sample_id,))
-        conn.execute("DELETE FROM samples WHERE sample_id = ?", (sample_id,))
+        _delete_samples_by_ids(conn, [sample_id])
+
+
+def delete_samples_by_file_path(sample_file_path: str) -> dict[str, int]:
+    """按生成样本文件路径删除样本记录和数据集关联，不删除本地 .npy 文件。"""
+
+    init_database()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT sample_id FROM samples WHERE sample_file_path = ?",
+            (sample_file_path,),
+        ).fetchall()
+        return _delete_samples_by_ids(conn, [row["sample_id"] for row in rows])
+
+
+def delete_samples_by_device(device_id: str) -> dict[str, int]:
+    """按设备编号批量删除样本记录和数据集关联，不删除本地样本文件。"""
+
+    init_database()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT sample_id FROM samples WHERE device_id = ?",
+            (device_id,),
+        ).fetchall()
+        return _delete_samples_by_ids(conn, [row["sample_id"] for row in rows])
+
+
+def get_raw_file_delete_impact(file_path: str) -> dict[str, int]:
+    """预估删除一条原始文件记录会影响的数据库记录数量。"""
+
+    init_database()
+    with _connect() as conn:
+        return _raw_file_delete_impact(conn, file_path)
+
+
+def delete_raw_file_record(file_path: str) -> dict[str, int]:
+    """删除原始采集数据库记录及其派生样本关联，不删除本地原始文件。"""
+
+    init_database()
+    counts = _empty_raw_file_delete_counts()
+    with _connect() as conn:
+        raw_row = conn.execute(
+            "SELECT id FROM raw_files WHERE file_path = ?",
+            (file_path,),
+        ).fetchone()
+        raw_file_id = int(raw_row["id"]) if raw_row is not None else None
+        sample_rows = _raw_file_sample_rows(conn, file_path, raw_file_id)
+        sample_counts = _delete_samples_by_ids(conn, [row["sample_id"] for row in sample_rows])
+        counts.update(sample_counts)
+
+        if raw_file_id is not None:
+            cursor = conn.execute("DELETE FROM preprocess_tasks WHERE raw_file_id = ?", (raw_file_id,))
+            counts["preprocess_tasks"] = int(cursor.rowcount if cursor.rowcount != -1 else 0)
+            cursor = conn.execute("DELETE FROM raw_files WHERE id = ?", (raw_file_id,))
+            counts["raw_files"] = int(cursor.rowcount if cursor.rowcount != -1 else 0)
+    return counts
 
 
 def delete_dataset_version(version_id: str) -> None:
@@ -514,10 +695,14 @@ def list_dataset_items(version_id: str) -> list[DatasetItemRecord]:
                 di.sample_id,
                 di.label_value,
                 di.split,
+                s.source_type,
+                s.raw_file_path,
                 s.sample_file_path,
                 s.label_type,
                 s.label_individual,
-                s.raw_file_path,
+                s.sample_rate_hz,
+                s.center_frequency_hz,
+                s.device_id,
                 s.sample_count
             FROM dataset_items di
             JOIN samples s ON s.sample_id = di.sample_id
@@ -534,13 +719,18 @@ def list_dataset_items(version_id: str) -> list[DatasetItemRecord]:
             DatasetItemRecord(
                 version_id=row["version_id"],
                 sample_id=row["sample_id"],
+                source_type=row["source_type"],
+                raw_file_path=row["raw_file_path"],
                 sample_file_path=str(sample_path),
                 label_value=row["label_value"],
                 label_type=row["label_type"],
                 label_individual=row["label_individual"],
                 split=row["split"],
                 source_file=Path(row["raw_file_path"]).name,
+                sample_rate_hz=float(row["sample_rate_hz"]),
+                center_frequency_hz=float(row["center_frequency_hz"]),
                 sample_count=int(row["sample_count"]),
+                device_id=row["device_id"],
                 file_exists=sample_path.exists(),
             )
         )
@@ -581,17 +771,24 @@ def write_dataset_manifest(version_id: str) -> Path | None:
         "sample_count": detail.version.sample_count,
         "source_summary": detail.version.source_summary,
         "label_counts": detail.version.label_counts,
+        "split_random_seed": DATASET_SPLIT_RANDOM_SEED,
+        "split_summary": _build_manifest_split_summary(detail.items),
         "missing_file_count": detail.missing_file_count,
         "empty_label_count": detail.empty_label_count,
         "items": [
             {
                 "sample_id": item.sample_id,
+                "source_type": item.source_type,
+                "raw_file_path": item.raw_file_path,
                 "sample_file_path": item.sample_file_path,
                 "label_value": item.label_value,
                 "label_type": item.label_type,
                 "label_individual": item.label_individual,
                 "split": item.split,
                 "source_file": item.source_file,
+                "sample_rate_hz": item.sample_rate_hz,
+                "center_frequency_hz": item.center_frequency_hz,
+                "device_id": item.device_id,
                 "sample_count": item.sample_count,
                 "file_exists": item.file_exists,
             }
@@ -600,6 +797,23 @@ def write_dataset_manifest(version_id: str) -> Path | None:
     }
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_path
+
+
+def _build_manifest_split_summary(items: list[DatasetItemRecord]) -> dict[str, dict[str, object]]:
+    """生成 manifest 中的划分摘要，便于训练页和人工复核。"""
+
+    summary: dict[str, dict[str, object]] = {}
+    for item in items:
+        split_bucket = summary.setdefault(item.split, {"sample_count": 0, "label_counts": {}, "device_count": 0})
+        split_bucket["sample_count"] = int(split_bucket["sample_count"]) + 1
+        label_counts = split_bucket["label_counts"]
+        if isinstance(label_counts, dict):
+            label_counts[item.label_value] = int(label_counts.get(item.label_value, 0)) + 1
+
+    for split, split_bucket in summary.items():
+        devices = {item.device_id for item in items if item.split == split and item.device_id}
+        split_bucket["device_count"] = len(devices)
+    return summary
 
 
 def save_trained_model(record: TrainedModelRecord) -> None:
@@ -675,6 +889,160 @@ def delete_trained_model(model_id: str) -> None:
         conn.execute("DELETE FROM trained_models WHERE model_id = ?", (model_id,))
 
 
+def _empty_raw_file_delete_counts() -> dict[str, int]:
+    """返回原始文件删除影响统计的默认结构。"""
+
+    return {
+        "raw_files": 0,
+        "preprocess_tasks": 0,
+        "samples": 0,
+        "dataset_items": 0,
+        "dataset_versions_deleted": 0,
+        "dataset_versions_updated": 0,
+    }
+
+
+def _raw_file_delete_impact(conn: sqlite3.Connection, file_path: str) -> dict[str, int]:
+    """计算删除原始文件记录前的数据库影响范围。"""
+
+    counts = _empty_raw_file_delete_counts()
+    raw_row = conn.execute(
+        "SELECT id FROM raw_files WHERE file_path = ?",
+        (file_path,),
+    ).fetchone()
+    raw_file_id = int(raw_row["id"]) if raw_row is not None else None
+    counts["raw_files"] = 1 if raw_file_id is not None else 0
+    if raw_file_id is not None:
+        counts["preprocess_tasks"] = int(
+            conn.execute("SELECT COUNT(*) FROM preprocess_tasks WHERE raw_file_id = ?", (raw_file_id,)).fetchone()[0]
+        )
+
+    sample_ids = [row["sample_id"] for row in _raw_file_sample_rows(conn, file_path, raw_file_id)]
+    counts["samples"] = len(sample_ids)
+    if not sample_ids:
+        return counts
+
+    placeholders = ", ".join("?" for _ in sample_ids)
+    counts["dataset_items"] = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM dataset_items WHERE sample_id IN ({placeholders})",
+            tuple(sample_ids),
+        ).fetchone()[0]
+    )
+    version_rows = conn.execute(
+        f"SELECT DISTINCT version_id FROM dataset_items WHERE sample_id IN ({placeholders})",
+        tuple(sample_ids),
+    ).fetchall()
+    for row in version_rows:
+        version_id = row["version_id"]
+        remaining_count = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM dataset_items
+                WHERE version_id = ? AND sample_id NOT IN ({placeholders})
+                """,
+                (version_id, *sample_ids),
+            ).fetchone()[0]
+        )
+        if remaining_count <= 0:
+            counts["dataset_versions_deleted"] += 1
+        else:
+            counts["dataset_versions_updated"] += 1
+    return counts
+
+
+def _raw_file_sample_rows(
+    conn: sqlite3.Connection,
+    file_path: str,
+    raw_file_id: int | None,
+) -> list[sqlite3.Row]:
+    """读取一个原始文件关联的样本行，兼容 raw_file_id 缺失的旧记录。"""
+
+    if raw_file_id is None:
+        return conn.execute(
+            "SELECT sample_id FROM samples WHERE raw_file_path = ?",
+            (file_path,),
+        ).fetchall()
+    return conn.execute(
+        """
+        SELECT sample_id
+        FROM samples
+        WHERE raw_file_id = ? OR raw_file_path = ?
+        """,
+        (raw_file_id, file_path),
+    ).fetchall()
+
+
+def _delete_samples_by_ids(conn: sqlite3.Connection, sample_ids: list[str]) -> dict[str, int]:
+    """删除样本和数据集关联，并刷新受影响版本摘要。"""
+
+    unique_ids = [sample_id for sample_id in dict.fromkeys(sample_ids) if sample_id]
+    counts = {
+        "samples": 0,
+        "dataset_items": 0,
+        "dataset_versions_deleted": 0,
+        "dataset_versions_updated": 0,
+    }
+    if not unique_ids:
+        return counts
+
+    placeholders = ", ".join("?" for _ in unique_ids)
+    version_rows = conn.execute(
+        f"SELECT DISTINCT version_id FROM dataset_items WHERE sample_id IN ({placeholders})",
+        tuple(unique_ids),
+    ).fetchall()
+    version_ids = [row["version_id"] for row in version_rows]
+
+    cursor = conn.execute(
+        f"DELETE FROM dataset_items WHERE sample_id IN ({placeholders})",
+        tuple(unique_ids),
+    )
+    counts["dataset_items"] = int(cursor.rowcount if cursor.rowcount != -1 else 0)
+    cursor = conn.execute(
+        f"DELETE FROM samples WHERE sample_id IN ({placeholders})",
+        tuple(unique_ids),
+    )
+    counts["samples"] = int(cursor.rowcount if cursor.rowcount != -1 else 0)
+
+    summary_counts = _refresh_dataset_version_summaries(conn, version_ids)
+    counts.update(summary_counts)
+    return counts
+
+
+def _refresh_dataset_version_summaries(conn: sqlite3.Connection, version_ids: list[str]) -> dict[str, int]:
+    """重算样本删除后受影响的数据集版本摘要，空版本直接移除。"""
+
+    counts = {"dataset_versions_deleted": 0, "dataset_versions_updated": 0}
+    for version_id in dict.fromkeys(version_ids):
+        rows = conn.execute(
+            """
+            SELECT label_value, COUNT(*) AS sample_count
+            FROM dataset_items
+            WHERE version_id = ?
+            GROUP BY label_value
+            """,
+            (version_id,),
+        ).fetchall()
+        if not rows:
+            cursor = conn.execute("DELETE FROM dataset_versions WHERE version_id = ?", (version_id,))
+            counts["dataset_versions_deleted"] += int(cursor.rowcount if cursor.rowcount != -1 else 0)
+            continue
+
+        label_counts = {str(row["label_value"]): int(row["sample_count"]) for row in rows}
+        sample_count = sum(label_counts.values())
+        conn.execute(
+            """
+            UPDATE dataset_versions
+            SET sample_count = ?, label_counts_json = ?
+            WHERE version_id = ?
+            """,
+            (sample_count, json.dumps(label_counts, ensure_ascii=False), version_id),
+        )
+        counts["dataset_versions_updated"] += 1
+    return counts
+
+
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
     """创建一次短生命周期 SQLite 连接。"""
@@ -700,7 +1068,7 @@ def _upsert_raw_file(
     bandwidth_hz: float,
     now: str,
 ) -> int:
-    """写入或更新原始 CAP 文件记录，并返回主键。"""
+    """写入或更新原始文件记录，并返回主键。"""
 
     file_name = Path(file_path).name
     conn.execute(
@@ -711,9 +1079,18 @@ def _upsert_raw_file(
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(file_path) DO UPDATE SET
             file_name = excluded.file_name,
-            sample_rate_hz = excluded.sample_rate_hz,
-            center_frequency_hz = excluded.center_frequency_hz,
-            bandwidth_hz = excluded.bandwidth_hz,
+            sample_rate_hz = CASE
+                WHEN excluded.sample_rate_hz > 0 THEN excluded.sample_rate_hz
+                ELSE raw_files.sample_rate_hz
+            END,
+            center_frequency_hz = CASE
+                WHEN excluded.center_frequency_hz > 0 THEN excluded.center_frequency_hz
+                ELSE raw_files.center_frequency_hz
+            END,
+            bandwidth_hz = CASE
+                WHEN excluded.bandwidth_hz > 0 THEN excluded.bandwidth_hz
+                ELSE raw_files.bandwidth_hz
+            END,
             updated_at = excluded.updated_at
         """,
         (file_path, file_name, sample_rate_hz, center_frequency_hz, bandwidth_hz, now, now),

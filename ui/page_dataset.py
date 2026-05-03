@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QHeaderView,
     QRadioButton,
     QSpinBox,
     QTableWidget,
@@ -33,6 +34,7 @@ from services import (
     delete_label_mapping,
     delete_dataset_version,
     delete_sample,
+    delete_samples_by_device,
     init_database,
     list_dataset_versions,
     list_label_mappings,
@@ -125,6 +127,7 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._apply_filters()
         self._sync_review_form_from_selection()
+        self._sync_delete_device_samples_button()
         self._refresh_dataset_generation_controls()
 
     def get_sample_records(self) -> list[SampleRecord]:
@@ -137,6 +140,24 @@ class DatasetPage(QWidget):
 
         return list(self.dataset_versions)
 
+    def refresh_from_database(self, *, emit_signals: bool = True) -> None:
+        """从 SQLite 重新加载映射、样本和版本，并刷新下游页面。"""
+
+        self.sample_records = list_samples()
+        self.dataset_versions = list_dataset_versions()
+        self._reload_mapping_table()
+        self._refresh_sample_table()
+        self._refresh_history_table()
+        self._sync_device_filter_options()
+        self._refresh_annotation_metrics()
+        self._apply_filters()
+        self._sync_review_form_from_selection()
+        self._refresh_dataset_generation_controls(update_status=False)
+        self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
+        if emit_signals:
+            self.sample_records_updated.emit(self.get_sample_records())
+            self.dataset_versions_updated.emit(self.get_dataset_versions())
+
     def add_preprocess_records(self, records: list[SampleRecord]) -> None:
         """Append or update preprocess-generated sample records."""
 
@@ -147,16 +168,10 @@ class DatasetPage(QWidget):
             return
 
         upsert_samples(preprocess_records)
-        self.sample_records = list_samples()
-        self._refresh_sample_table()
-        self._sync_device_filter_options()
-        self._refresh_annotation_metrics()
-        self._apply_filters()
-        self._sync_review_form_from_selection()
+        self.refresh_from_database(emit_signals=False)
         self.annotation_status_label.setText(
             f"已同步 {len(preprocess_records)} 条预处理候选样本，请继续完成或确认标注。"
         )
-        self._refresh_dataset_generation_controls()
         self.sample_records_updated.emit(self.get_sample_records())
 
     def _build_sample_flow_card(self) -> SectionCard:
@@ -210,13 +225,18 @@ class DatasetPage(QWidget):
         self.mapping_table.setAlternatingRowColors(True)
         self.mapping_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.mapping_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.mapping_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.mapping_table.setColumnWidth(0, 150)
+        self.mapping_table.setColumnWidth(1, 110)
+        self.mapping_table.setColumnWidth(2, 120)
+        self.mapping_table.setColumnWidth(3, 180)
         configure_scrollable(self.mapping_table)
         self.mapping_table.itemSelectionChanged.connect(self._sync_mapping_form_from_selection)
 
         for row_index, record in enumerate(mapping_rows):
             row_data = [record.device_id, record.label_type, record.label_individual, record.note]
             for column, value in enumerate(row_data):
-                self.mapping_table.setItem(row_index, column, QTableWidgetItem(value))
+                self._set_table_value(self.mapping_table, row_index, column, value)
 
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(12)
@@ -265,6 +285,22 @@ class DatasetPage(QWidget):
         section.body_layout.addWidget(self.mapping_status_label)
         return section
 
+    def _reload_mapping_table(self) -> None:
+        """从数据库刷新编号映射表。"""
+
+        if not hasattr(self, "mapping_table"):
+            return
+        mapping_rows = list_label_mappings()
+        self.mapping_table.blockSignals(True)
+        self.mapping_table.setRowCount(len(mapping_rows))
+        for row_index, record in enumerate(mapping_rows):
+            row_data = [record.device_id, record.label_type, record.label_individual, record.note]
+            for column, value in enumerate(row_data):
+                self._set_table_value(self.mapping_table, row_index, column, value)
+        self.mapping_table.blockSignals(False)
+        self._mapping_edit_row = None
+        self.mapping_metric.set_value(str(len(mapping_rows)))
+
     def _build_sample_label_card(self) -> SectionCard:
         """Create the sample annotation card."""
 
@@ -297,10 +333,15 @@ class DatasetPage(QWidget):
         self.status_filter.addItems(["全部状态", "待标注", "已标注", "已排除"])
         self.status_filter.currentIndexChanged.connect(self._apply_filters)
 
+        self.delete_device_samples_button = QPushButton("删除当前设备样本")
+        self.delete_device_samples_button.setObjectName("DangerButton")
+        self.delete_device_samples_button.clicked.connect(self._delete_current_device_samples)
+
         filter_row.addWidget(QLabel("设备筛选"))
         filter_row.addWidget(self.device_filter)
         filter_row.addWidget(QLabel("标注状态"))
         filter_row.addWidget(self.status_filter)
+        filter_row.addWidget(self.delete_device_samples_button)
         filter_row.addStretch(1)
 
         self.sample_table = QTableWidget(0, 11)
@@ -325,6 +366,18 @@ class DatasetPage(QWidget):
         self.sample_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.sample_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.sample_table.itemSelectionChanged.connect(self._sync_review_form_from_selection)
+        self.sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.sample_table.setColumnWidth(self.SAMPLE_ID_COLUMN, 260)
+        self.sample_table.setColumnWidth(self.SOURCE_COLUMN, 120)
+        self.sample_table.setColumnWidth(self.RAW_FILE_COLUMN, 190)
+        self.sample_table.setColumnWidth(self.DEVICE_COLUMN, 140)
+        self.sample_table.setColumnWidth(self.SAMPLE_COUNT_COLUMN, 95)
+        self.sample_table.setColumnWidth(self.SNR_COLUMN, 80)
+        self.sample_table.setColumnWidth(self.SCORE_COLUMN, 95)
+        self.sample_table.setColumnWidth(self.TYPE_COLUMN, 130)
+        self.sample_table.setColumnWidth(self.INDIVIDUAL_COLUMN, 150)
+        self.sample_table.setColumnWidth(self.INCLUDE_COLUMN, 90)
+        self.sample_table.setColumnWidth(self.STATUS_COLUMN, 90)
         configure_scrollable(self.sample_table)
 
         review_title = QLabel("复核区")
@@ -447,6 +500,7 @@ class DatasetPage(QWidget):
 
         self.strategy_box = QComboBox()
         self.strategy_box.addItems(["按样本随机分层", "按设备个体隔离"])
+        self.strategy_box.currentIndexChanged.connect(self._refresh_dataset_generation_controls)
         self.dataset_type_radio.toggled.connect(self._refresh_dataset_generation_controls)
         self.dataset_individual_radio.toggled.connect(self._refresh_dataset_generation_controls)
 
@@ -692,6 +746,15 @@ class DatasetPage(QWidget):
             item = QTableWidgetItem()
             table.setItem(row, column, item)
         item.setText(value)
+        item.setToolTip(value)
+        left_align = (
+            (table is getattr(self, "sample_table", None) and column in {self.SAMPLE_ID_COLUMN, self.RAW_FILE_COLUMN})
+            or (table is getattr(self, "history_table", None) and column in {0, 4})
+            or (table is getattr(self, "mapping_table", None) and column in {0, 3})
+        )
+        item.setTextAlignment(
+            Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if left_align else Qt.AlignmentFlag.AlignCenter)
+        )
 
     def _build_mapping_lookup(self) -> dict[str, dict[str, str]]:
         """Return a device-to-label mapping from the current mapping table."""
@@ -940,6 +1003,7 @@ class DatasetPage(QWidget):
         self.review_include_checkbox.setEnabled(not running and self.review_status_box.currentText() != "已排除")
         self.save_review_button.setEnabled(not running)
         self.delete_sample_button.setEnabled(not running)
+        self.delete_device_samples_button.setEnabled(not running and self._current_device_for_bulk_delete() != "")
         self.generate_button.setEnabled(
             not running and self._split_ratio_total() == 100 and self._has_dataset_candidates_for_current_mode()
         )
@@ -1010,17 +1074,63 @@ class DatasetPage(QWidget):
             return
 
         delete_sample(sample_id)
-        self.sample_records = list_samples()
-        self.dataset_versions = list_dataset_versions()
-        self._refresh_sample_table()
-        self._sync_device_filter_options()
-        self._refresh_annotation_metrics()
-        self._apply_filters()
-        self._sync_review_form_from_selection()
-        self._refresh_history_table()
-        self._refresh_dataset_generation_controls(update_status=False)
-        self.version_metric.set_value(self.dataset_versions[-1].version_id if self.dataset_versions else "未生成")
+        self.refresh_from_database(emit_signals=False)
         self.annotation_status_label.setText(f"已删除样本数据库记录：{sample_id}。本地样本文件未删除。")
+        self.sample_records_updated.emit(self.get_sample_records())
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _current_device_for_bulk_delete(self) -> str:
+        """返回批量删除设备样本的目标设备编号。"""
+
+        selected_device = self.device_filter.currentText().strip() if hasattr(self, "device_filter") else ""
+        if selected_device and selected_device != "全部设备":
+            return selected_device
+        row = self.sample_table.currentRow() if hasattr(self, "sample_table") else -1
+        if row >= 0:
+            return self._item_text(self.sample_table, row, self.DEVICE_COLUMN)
+        return ""
+
+    def _sync_delete_device_samples_button(self) -> None:
+        """刷新按设备批量删除按钮状态。"""
+
+        if not hasattr(self, "delete_device_samples_button"):
+            return
+        self.delete_device_samples_button.setEnabled(
+            not self._is_auto_labeling()
+            and not self._is_dataset_building()
+            and self._current_device_for_bulk_delete() != ""
+        )
+
+    def _delete_current_device_samples(self) -> None:
+        """删除当前筛选设备的全部样本数据库记录，不删除本地文件。"""
+
+        device_id = self._current_device_for_bulk_delete()
+        if not device_id:
+            self.annotation_status_label.setText("请先在设备筛选中选择一个设备，或选中某个样本行。")
+            return
+
+        match_count = sum(1 for record in self.sample_records if record.device_id == device_id)
+        if match_count <= 0:
+            self.annotation_status_label.setText(f"当前没有设备 {device_id} 的样本记录。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除当前设备样本",
+            f"确认从数据库删除设备 {device_id} 的全部 {match_count} 条样本记录？\n\n"
+            "本操作会清理相关数据集关联并重算版本摘要，但不会删除本地 .npy 文件。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        counts = delete_samples_by_device(device_id)
+        self.refresh_from_database(emit_signals=False)
+        self.annotation_status_label.setText(
+            f"已删除设备 {device_id} 的样本记录 {counts.get('samples', 0)} 条，"
+            f"数据集关联 {counts.get('dataset_items', 0)} 条；本地文件未删除。"
+        )
         self.sample_records_updated.emit(self.get_sample_records())
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
@@ -1132,6 +1242,7 @@ class DatasetPage(QWidget):
             self.review_include_checkbox.blockSignals(False)
             self.review_status_box.setCurrentText("待标注")
             self.review_individual_input.setEnabled(self.individual_radio.isChecked())
+            self._sync_delete_device_samples_button()
             return
 
         self.review_sample_value.setText(self._item_text(self.sample_table, row, self.SAMPLE_ID_COLUMN))
@@ -1145,6 +1256,7 @@ class DatasetPage(QWidget):
         self.review_status_box.setCurrentText(status_text)
         self.review_include_checkbox.setEnabled(status_text != "已排除")
         self.review_individual_input.setEnabled(self.individual_radio.isChecked())
+        self._sync_delete_device_samples_button()
 
     def _save_manual_review(self) -> None:
         """Save manual corrections for the selected sample."""
@@ -1352,9 +1464,11 @@ class DatasetPage(QWidget):
         is_valid = total_ratio == 100
         task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
         label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
+        device_split_warning = self._device_split_warning(task_type) if self.strategy_box.currentText() == "按设备个体隔离" else ""
         can_generate = (
             is_valid
             and bool(label_counts)
+            and not device_split_warning
             and not self._is_dataset_building()
             and not self._is_auto_labeling()
         )
@@ -1374,6 +1488,9 @@ class DatasetPage(QWidget):
             self.dataset_build_status_label.setText(
                 "当前划分比例已满足 100%，但还没有可用样本。生成版本需要：已标注、标签非空、纳入候选。"
             )
+            return
+        if device_split_warning:
+            self.dataset_build_status_label.setText(device_split_warning)
             return
         self.dataset_build_status_label.setText(
             f"当前划分比例已满足 100%，可生成{task_type}数据集：共 {len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
@@ -1474,11 +1591,14 @@ class DatasetPage(QWidget):
     def _set_dataset_building_state(self, running: bool) -> None:
         """根据数据集生成状态统一启用或禁用相关控件。"""
 
+        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
+        device_split_warning = self._device_split_warning(task_type) if self.strategy_box.currentText() == "按设备个体隔离" else ""
         self.generate_button.setEnabled(
             not running
             and self._split_ratio_total() == 100
             and not self._is_auto_labeling()
             and self._has_dataset_candidates_for_current_mode()
+            and not device_split_warning
         )
         self.dataset_type_radio.setEnabled(not running)
         self.dataset_individual_radio.setEnabled(not running)
@@ -1489,6 +1609,7 @@ class DatasetPage(QWidget):
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
         self.auto_label_button.setEnabled(not running and not self._is_auto_labeling())
+        self.delete_device_samples_button.setEnabled(not running and self._current_device_for_bulk_delete() != "")
 
     def _is_dataset_building(self) -> bool:
         """返回当前是否存在正在执行的数据集生成任务。"""
@@ -1501,3 +1622,26 @@ class DatasetPage(QWidget):
         task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
         label_counts, _, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
         return bool(label_counts)
+
+    def _device_split_warning(self, task_type: str) -> str:
+        """检查按设备隔离划分是否具备足够设备数。"""
+
+        grouped: dict[str, set[str]] = {}
+        label_counts: dict[str, int] = {}
+        use_type_label = task_type == "类型识别"
+        for record in self.sample_records:
+            label_value = record.label_type if use_type_label else record.label_individual
+            if record.status != "已标注" or not record.include_in_dataset or not label_value:
+                continue
+            grouped.setdefault(label_value, set()).add(record.device_id.strip() or "未指定设备")
+            label_counts[label_value] = label_counts.get(label_value, 0) + 1
+
+        for label_value, device_ids in sorted(grouped.items()):
+            split_counts = self._calculate_split_counts(label_counts.get(label_value, 0))
+            required_groups = sum(1 for count in split_counts if count > 0)
+            if len(device_ids) < required_groups:
+                return (
+                    f"按设备个体隔离需要每个标签至少 {required_groups} 个设备编号；"
+                    f"标签 {label_value} 当前只有 {len(device_ids)} 个。请补充设备样本，或改用按样本随机分层。"
+                )
+        return ""

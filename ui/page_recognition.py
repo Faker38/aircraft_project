@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -32,6 +32,8 @@ from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, V
 
 class RecognitionPage(QWidget):
     """工作流页面：类型识别真实推理，个体识别演示显示。"""
+
+    sample_refresh_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """初始化识别页面。"""
@@ -95,7 +97,7 @@ class RecognitionPage(QWidget):
             "无人机识别 · 实时判别视图",
             "当前类型识别页直接读取训练页输出的真实模型进行推理；个体指纹识别入口已保留，真实服务待接入。",
             background_name="recognition_header_bg.svg",
-            chips=["真实模型推理", "标签空间校验", "结果可追溯"],
+            chips=["真实模型推理", "适用域提示", "结果可追溯"],
             ornament_name="decor_lock_target_c.svg",
             height=170,
         )
@@ -108,6 +110,13 @@ class RecognitionPage(QWidget):
         ]
         for mode_key in self.mode_controls:
             self._refresh_sample_selector(mode_key)
+
+    def _refresh_and_load_sample(self, mode_key: str) -> None:
+        """请求上游刷新数据库样本，然后加载当前选择。"""
+
+        self.sample_refresh_requested.emit()
+        self._refresh_sample_selector(mode_key)
+        self._load_selected_sample(mode_key)
 
     def set_trained_models(self, records: list[TrainedModelRecord]) -> None:
         """刷新识别页可选的真实模型列表。"""
@@ -156,8 +165,8 @@ class RecognitionPage(QWidget):
         form_layout.addRow("目标样本", sample_selector)
 
         button_row = QHBoxLayout()
-        load_button = QPushButton("加载样本")
-        load_button.clicked.connect(lambda: self._load_selected_sample(mode_key))
+        load_button = QPushButton("刷新并加载样本")
+        load_button.clicked.connect(lambda: self._refresh_and_load_sample(mode_key))
         run_button = QPushButton("开始识别")
         run_button.setObjectName("PrimaryButton")
         run_button.clicked.connect(lambda: self._run_recognition(mode_key))
@@ -226,8 +235,14 @@ class RecognitionPage(QWidget):
                 version_hint = " | 来源版本已删" if self._is_model_version_deleted(record) else ""
                 display_text = f"{record.model_id} | {record.dataset_version_id} | {record.accuracy_text}{version_hint}"
                 model_selector.addItem(display_text, record)
+                model_selector.setItemData(model_selector.count() - 1, display_text, Qt.ItemDataRole.ToolTipRole)
         else:
             model_selector.addItem("保留功能 | 真实个体模型待接入", "pending")
+            model_selector.setItemData(
+                model_selector.count() - 1,
+                "保留功能 | 真实个体模型待接入",
+                Qt.ItemDataRole.ToolTipRole,
+            )
         model_selector.blockSignals(False)
 
         if model_selector.count() == 0:
@@ -236,8 +251,10 @@ class RecognitionPage(QWidget):
             assert isinstance(run_button, QPushButton)
             assert isinstance(load_button, QPushButton)
             run_button.setEnabled(False)
-            load_button.setEnabled(False)
-            self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
+            load_button.setEnabled(True)
+            self._refresh_sample_selector(mode_key)
+            if mode_key == "type" and not self.sample_records:
+                self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
             return
 
         target_index = 0
@@ -301,11 +318,7 @@ class RecognitionPage(QWidget):
             self._load_selected_sample(mode_key)
             return
 
-        empty_hint = (
-            "当前模型无匹配样本，请在数据集页确认标签或切换模型"
-            if mode_key == "type" and model_record is not None
-            else ("请先在数据集页补齐已标注样本" if mode_key == "type" else "个体识别样本暂未准备")
-        )
+        empty_hint = "当前无预处理样本，请先完成预处理或标注同步" if mode_key == "type" else "个体识别样本暂未准备"
         run_button = controls["run_button"]
         load_button = controls["load_button"]
         assert isinstance(run_button, QPushButton)
@@ -323,11 +336,19 @@ class RecognitionPage(QWidget):
         """按页签模式过滤更适合演示的样本。"""
 
         if mode_key == "type":
-            labeled_records = [record for record in self.sample_records if record.label_type]
-            if model_record is not None:
-                label_space = set(model_record.label_space)
-                return [record for record in labeled_records if record.label_type in label_space]
-            return labeled_records or list(self.sample_records)
+            records = list(self.sample_records)
+            label_space = set(model_record.label_space) if model_record is not None else set()
+
+            def sort_key(record: SampleRecord) -> tuple[int, str, str]:
+                if label_space and record.label_type in label_space:
+                    priority = 0
+                elif record.label_type:
+                    priority = 1
+                else:
+                    priority = 2
+                return (priority, record.device_id, record.sample_id)
+
+            return sorted(records, key=sort_key)
         labeled_records = [record for record in self.sample_records if record.label_individual]
         return labeled_records or list(self.sample_records)
 
@@ -396,14 +417,22 @@ class RecognitionPage(QWidget):
         model_record = None
         if mode_key == "type":
             model_record = self._selected_type_model_record()
-            if isinstance(model_record, TrainedModelRecord) and record.label_type not in model_record.label_space:
-                self._refresh_sample_selector(mode_key)
-                return
             run_button.setEnabled(isinstance(model_record, TrainedModelRecord))
         else:
             run_button.setEnabled(True)
 
         current_label = record.label_type if mode_key == "type" else record.label_individual
+        label_status = "-"
+        if mode_key == "type" and isinstance(model_record, TrainedModelRecord):
+            if not current_label:
+                label_status = "样本未标注；可识别，但不计算命中。"
+            elif current_label in model_record.label_space:
+                label_status = "样本标签在当前模型标签空间内。"
+            else:
+                label_status = "样本标签不在当前模型标签空间内；可识别，但不计算命中。"
+            domain_status = self._domain_status_text(record, model_record)
+        else:
+            domain_status = "-"
         sample_selector.setToolTip(
             f"样本编号：{record.sample_id}\n来源文件：{record.raw_file_name}\n来源路径：{record.raw_file_path}"
         )
@@ -422,8 +451,11 @@ class RecognitionPage(QWidget):
                     if mode_key == "type" and isinstance(model_record, TrainedModelRecord)
                     else "-",
                 ],
+                ["标签空间状态", label_status],
+                ["适用域状态", domain_status],
             ],
             status_text=f"已加载 {record.sample_id}",
+            status_level="warning" if domain_status.startswith("域外") else None,
         )
 
     def _run_recognition(self, mode_key: str) -> None:
@@ -461,21 +493,6 @@ class RecognitionPage(QWidget):
             self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
             return
 
-        current_label = record.label_type or "未标注"
-        if current_label != "未标注" and current_label not in model_record.label_space:
-            self._refresh_sample_selector(mode_key)
-            self._set_result_rows(
-                mode_key,
-                [
-                    ["当前样本", record.sample_id],
-                    ["当前标签", self._display_label(current_label)],
-                    ["当前模型", model_record.model_id],
-                    ["提示", "已按当前模型标签空间重新筛选样本；请使用匹配样本或切换模型。"],
-                ],
-                status_text="待识别",
-            )
-            return
-
         try:
             result = predict_type_sample(model_record.model_id, record.sample_file_path)
         except ModelServiceError as exc:
@@ -497,15 +514,30 @@ class RecognitionPage(QWidget):
 
         current_label = sample_record.label_type or "未标注"
         predicted_label = result.predicted_label
-        is_match = "是" if current_label != "未标注" and predicted_label == current_label else "否"
+        label_space = set(result.model_record.label_space)
+        domain_warnings = self._domain_warning_messages(sample_record, result.model_record)
+        can_judge_match = current_label != "未标注" and current_label in label_space and not domain_warnings
+        is_match = "是" if can_judge_match and predicted_label == current_label else ("否" if can_judge_match else "-")
+        match_hint = ""
+        if domain_warnings:
+            match_hint = "域外样本，命中判断不可用；预测置信度不是准确率，只表示闭集模型在现有标签中的最大类别概率。"
+        elif current_label == "未标注":
+            match_hint = "样本未标注，命中判断不可用。"
+        elif current_label not in label_space:
+            match_hint = "样本标签不在当前模型标签空间内，命中判断不可用。"
+        probability_text = self._format_probability_text(result.probabilities)
         confidence_text = f"{result.confidence * 100:.2f}%"
 
         rows = [
             ["当前样本", sample_record.sample_id],
             ["当前标签", self._display_label(current_label)],
             ["预测标签", self._display_label(predicted_label)],
-            ["置信度", confidence_text],
+            ["预测置信度", confidence_text],
+            ["类别概率", probability_text],
             ["是否命中", is_match],
+            ["命中说明", match_hint or "当前标签可用于命中判断。"],
+            ["适用域提示", self._domain_status_text(sample_record, result.model_record)],
+            ["置信度说明", "预测置信度是 RandomForest 的最大类别概率，不等同于模型准确率。"],
             ["来源文件", sample_record.raw_file_name],
             ["来源路径", sample_record.raw_file_path],
             ["来源类型", sample_record.source_label],
@@ -515,9 +547,23 @@ class RecognitionPage(QWidget):
             ["标签空间", " / ".join(self._display_label(label) for label in result.model_record.label_space)],
         ]
         self.latest_result_metric.set_value(self._display_label(predicted_label))
-        self._set_result_rows("type", rows, status_text=f"结果: {self._display_label(predicted_label)}")
+        if domain_warnings:
+            self._set_result_rows(
+                "type",
+                rows,
+                status_text=f"域外结果: {self._display_label(predicted_label)}",
+                status_level="warning",
+            )
+        else:
+            self._set_result_rows("type", rows, status_text=f"结果: {self._display_label(predicted_label)}")
 
-    def _set_result_rows(self, mode_key: str, rows: list[list[str]], status_text: str) -> None:
+    def _set_result_rows(
+        self,
+        mode_key: str,
+        rows: list[list[str]],
+        status_text: str,
+        status_level: str | None = None,
+    ) -> None:
         """刷新一个页签下的结果表。"""
 
         controls = self.mode_controls[mode_key]
@@ -526,7 +572,9 @@ class RecognitionPage(QWidget):
         assert isinstance(status_badge, StatusBadge)
         assert isinstance(result_table, QTableWidget)
 
-        level = "success" if status_text.startswith("结果") else ("danger" if "失败" in status_text else "info")
+        level = status_level or (
+            "success" if status_text.startswith("结果") else ("danger" if "失败" in status_text else "info")
+        )
         status_badge.set_status(self._compact_middle(status_text, 28), level, size="sm")
         status_badge.setToolTip(status_text)
         result_table.setRowCount(len(rows))
@@ -543,6 +591,119 @@ class RecognitionPage(QWidget):
         """把标签转换为适合界面展示的文本。"""
 
         return label.replace("_", " ")
+
+    def _format_probability_text(self, probabilities: dict[str, float]) -> str:
+        """把模型类别概率格式化成紧凑、可读的结果文本。"""
+
+        if not probabilities:
+            return "当前模型未提供类别概率。"
+        sorted_items = sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
+        return " / ".join(
+            f"{self._display_label(label)} {probability * 100:.2f}%"
+            for label, probability in sorted_items
+        )
+
+    def _domain_status_text(self, sample_record: SampleRecord, model_record: TrainedModelRecord) -> str:
+        """返回当前样本是否落在模型训练适用域内的说明。"""
+
+        warnings = self._domain_warning_messages(sample_record, model_record)
+        if not warnings:
+            return "样本来源、中心频率和采样率在当前模型训练范围内。"
+        return "域外样本：" + "；".join(warnings)
+
+    def _domain_warning_messages(
+        self,
+        sample_record: SampleRecord,
+        model_record: TrainedModelRecord,
+    ) -> list[str]:
+        """基于模型训练元数据判断样本是否明显域外。"""
+
+        domain = self._model_training_domain(model_record)
+        if not domain:
+            return []
+
+        warnings: list[str] = []
+        source_types = domain.get("source_types")
+        if isinstance(source_types, list) and source_types and sample_record.source_type not in source_types:
+            warnings.append(
+                f"样本来源为 {sample_record.source_label}，模型训练来源为 "
+                + " / ".join(str(item) for item in source_types)
+            )
+
+        frequency_warning = self._range_warning(
+            "中心频率",
+            sample_record.center_frequency_hz,
+            domain.get("center_frequency_hz_range"),
+            unit="MHz",
+            divisor=1_000_000.0,
+            minimum_margin=5_000_000.0,
+        )
+        if frequency_warning:
+            warnings.append(frequency_warning)
+
+        sample_rate_warning = self._range_warning(
+            "采样率",
+            sample_record.sample_rate_hz,
+            domain.get("sample_rate_hz_range"),
+            unit="MHz",
+            divisor=1_000_000.0,
+            minimum_margin=500_000.0,
+        )
+        if sample_rate_warning:
+            warnings.append(sample_rate_warning)
+        return warnings
+
+    def _model_training_domain(self, model_record: TrainedModelRecord) -> dict[str, object]:
+        """优先读取模型元数据，旧模型则回退到仍存在的数据集版本。"""
+
+        domain = model_record.metrics.get("training_domain")
+        if isinstance(domain, dict):
+            return domain
+
+        detail = get_dataset_version_detail(model_record.dataset_version_id)
+        if detail is None:
+            return {}
+        source_types = sorted({item.source_type for item in detail.items if item.source_type})
+        frequencies = [item.center_frequency_hz for item in detail.items if item.center_frequency_hz > 0]
+        sample_rates = [item.sample_rate_hz for item in detail.items if item.sample_rate_hz > 0]
+        return {
+            "source_types": source_types,
+            "center_frequency_hz_range": self._range_payload(frequencies),
+            "sample_rate_hz_range": self._range_payload(sample_rates),
+        }
+
+    def _range_payload(self, values: list[float]) -> dict[str, float] | None:
+        """把数值列表压缩成范围。"""
+
+        if not values:
+            return None
+        return {"min": float(min(values)), "max": float(max(values))}
+
+    def _range_warning(
+        self,
+        label: str,
+        value: float,
+        range_payload: object,
+        *,
+        unit: str,
+        divisor: float,
+        minimum_margin: float,
+    ) -> str:
+        """判断一个数值是否超出模型训练范围并返回说明。"""
+
+        if value <= 0 or not isinstance(range_payload, dict):
+            return ""
+        lower = float(range_payload.get("min", 0.0) or 0.0)
+        upper = float(range_payload.get("max", 0.0) or 0.0)
+        if lower <= 0 or upper <= 0:
+            return ""
+        margin = max(minimum_margin, abs(upper - lower) * 0.1)
+        if lower - margin <= value <= upper + margin:
+            return ""
+        return (
+            f"{label} {value / divisor:.3f} {unit} 超出模型训练范围 "
+            f"{lower / divisor:.3f}-{upper / divisor:.3f} {unit}"
+        )
 
     def _compact_source_name(self, file_name: str) -> str:
         """Return a compact file name for combo-box display."""
