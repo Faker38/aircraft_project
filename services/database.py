@@ -11,15 +11,17 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 from typing import Any, Iterator
 
-from config import DATASETS_DIR, DB_DIR
+from config import DATASETS_DIR, DB_DIR, MODELS_DIR, RAW_DATA_DIR, SAMPLES_DIR
 from services.workflow_records import (
     DatasetItemRecord,
     DatasetVersionDetail,
     DatasetVersionRecord,
     LabelMappingRecord,
+    OrphanFileRecord,
     RawFileRecord,
     SampleRecord,
     TrainedModelRecord,
@@ -600,6 +602,96 @@ def clear_processed_dataset_records() -> dict[str, int]:
     return counts
 
 
+def list_orphan_local_paths() -> list[OrphanFileRecord]:
+    """列出数据库无引用的本地运行文件和目录，默认仅供预览。"""
+
+    init_database()
+    with _connect() as conn:
+        raw_paths = _database_path_set(conn, "SELECT file_path FROM raw_files")
+        sample_raw_paths = _database_path_set(conn, "SELECT raw_file_path FROM samples")
+        sample_paths = _database_path_set(conn, "SELECT sample_file_path FROM samples")
+        dataset_ids = {
+            str(row["version_id"])
+            for row in conn.execute("SELECT version_id FROM dataset_versions").fetchall()
+            if row["version_id"]
+        }
+        model_artifact_paths = _database_path_set(conn, "SELECT artifact_path FROM trained_models")
+
+    referenced_raw_paths = set(raw_paths) | set(sample_raw_paths)
+    for path_text in list(referenced_raw_paths):
+        path = Path(path_text)
+        if path.suffix.lower() in {".iq", ".bin"}:
+            referenced_raw_paths.add(_normalized_path_text(path.with_suffix(".json")))
+
+    referenced_model_dirs = {
+        _normalized_path_text(Path(path_text).parent)
+        for path_text in model_artifact_paths
+        if path_text
+    }
+
+    orphan_records: list[OrphanFileRecord] = []
+    orphan_records.extend(
+        _scan_orphan_files(
+            root=RAW_DATA_DIR,
+            referenced_paths=referenced_raw_paths,
+            scope="原始文件",
+            reason="数据库 raw_files/samples 已无引用",
+            suffixes={".cap", ".iq", ".bin", ".json"},
+        )
+    )
+    orphan_records.extend(
+        _scan_orphan_files(
+            root=SAMPLES_DIR,
+            referenced_paths=sample_paths,
+            scope="预处理样本",
+            reason="数据库 samples 已无引用",
+            suffixes={".npy"},
+        )
+    )
+    orphan_records.extend(
+        _scan_orphan_dataset_dirs(dataset_ids)
+    )
+    orphan_records.extend(
+        _scan_orphan_model_dirs(referenced_model_dirs)
+    )
+    return sorted(orphan_records, key=lambda record: (record.scope, record.path))
+
+
+def delete_orphan_local_paths(paths: list[str]) -> dict[str, int]:
+    """删除用户确认过的孤立文件或目录，只允许处理已知数据目录。"""
+
+    allowed_records = {_normalized_path_text(record.path): record for record in list_orphan_local_paths()}
+    counts = {"deleted": 0, "missing": 0, "skipped": 0, "failed": 0}
+    for path_text in paths:
+        normalized = _normalized_path_text(path_text)
+        record = allowed_records.get(normalized)
+        if record is None:
+            counts["skipped"] += 1
+            continue
+
+        path = Path(record.path)
+        if not _is_known_data_path(path):
+            counts["skipped"] += 1
+            continue
+        if not path.exists():
+            counts["missing"] += 1
+            continue
+
+        try:
+            if record.is_dir:
+                shutil.rmtree(path)
+            elif path.is_file():
+                path.unlink()
+            else:
+                counts["skipped"] += 1
+                continue
+        except OSError:
+            counts["failed"] += 1
+            continue
+        counts["deleted"] += 1
+    return counts
+
+
 def create_dataset_version(
     record: DatasetVersionRecord,
     sample_ids: list[str],
@@ -1041,6 +1133,146 @@ def _refresh_dataset_version_summaries(conn: sqlite3.Connection, version_ids: li
         )
         counts["dataset_versions_updated"] += 1
     return counts
+
+
+def _database_path_set(conn: sqlite3.Connection, query: str) -> set[str]:
+    """读取一列路径并标准化成可比较的绝对路径集合。"""
+
+    paths: set[str] = set()
+    for row in conn.execute(query).fetchall():
+        value = row[0]
+        if value:
+            paths.add(_normalized_path_text(value))
+    return paths
+
+
+def _normalized_path_text(path: str | Path) -> str:
+    """返回 Windows 下大小写稳定的规范路径文本。"""
+
+    return str(Path(path).expanduser().resolve(strict=False)).casefold()
+
+
+def _display_path_text(path: Path) -> str:
+    """返回界面展示用的绝对路径文本。"""
+
+    return str(path.resolve(strict=False))
+
+
+def _is_known_data_path(path: Path) -> bool:
+    """确认删除目标位于项目已知运行数据目录内。"""
+
+    normalized = _normalized_path_text(path)
+    roots = (RAW_DATA_DIR, SAMPLES_DIR, DATASETS_DIR, MODELS_DIR)
+    for root in roots:
+        root_text = _normalized_path_text(root)
+        if normalized == root_text or normalized.startswith(root_text + "\\"):
+            return True
+    return False
+
+
+def _safe_file_size(path: Path) -> int:
+    """读取文件大小，失败时返回 0。"""
+
+    try:
+        return int(path.stat().st_size)
+    except OSError:
+        return 0
+
+
+def _safe_dir_size(path: Path) -> int:
+    """估算目录总大小，失败项跳过。"""
+
+    total = 0
+    if not path.exists():
+        return 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            total += _safe_file_size(child)
+    return total
+
+
+def _scan_orphan_files(
+    *,
+    root: Path,
+    referenced_paths: set[str],
+    scope: str,
+    reason: str,
+    suffixes: set[str],
+) -> list[OrphanFileRecord]:
+    """扫描一个数据目录下未被数据库引用的文件。"""
+
+    if not root.exists():
+        return []
+    records: list[OrphanFileRecord] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        if _normalized_path_text(path) in referenced_paths:
+            continue
+        records.append(
+            OrphanFileRecord(
+                path=_display_path_text(path),
+                scope=scope,
+                size_bytes=_safe_file_size(path),
+                reason=reason,
+                is_dir=False,
+            )
+        )
+    return records
+
+
+def _scan_orphan_dataset_dirs(dataset_ids: set[str]) -> list[OrphanFileRecord]:
+    """扫描数据库无版本记录的数据集目录。"""
+
+    if not DATASETS_DIR.exists():
+        return []
+    records: list[OrphanFileRecord] = []
+    for path in sorted(DATASETS_DIR.iterdir()):
+        if not path.is_dir() or path.name in dataset_ids:
+            continue
+        records.append(
+            OrphanFileRecord(
+                path=_display_path_text(path),
+                scope="数据集版本目录",
+                size_bytes=_safe_dir_size(path),
+                reason="数据库 dataset_versions 已无引用",
+                is_dir=True,
+            )
+        )
+    return records
+
+
+def _scan_orphan_model_dirs(referenced_model_dirs: set[str]) -> list[OrphanFileRecord]:
+    """扫描数据库无模型记录的数据模型目录或散落文件。"""
+
+    if not MODELS_DIR.exists():
+        return []
+    records: list[OrphanFileRecord] = []
+    for path in sorted(MODELS_DIR.iterdir()):
+        normalized = _normalized_path_text(path)
+        if path.is_dir():
+            if normalized in referenced_model_dirs:
+                continue
+            records.append(
+                OrphanFileRecord(
+                    path=_display_path_text(path),
+                    scope="模型目录",
+                    size_bytes=_safe_dir_size(path),
+                    reason="数据库 trained_models 已无引用",
+                    is_dir=True,
+                )
+            )
+        elif path.is_file():
+            records.append(
+                OrphanFileRecord(
+                    path=_display_path_text(path),
+                    scope="模型散落文件",
+                    size_bytes=_safe_file_size(path),
+                    reason="模型文件不在已登记模型目录内",
+                    is_dir=False,
+                )
+            )
+    return records
 
 
 @contextmanager

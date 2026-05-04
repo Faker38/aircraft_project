@@ -111,7 +111,7 @@ class CapturePage(QWidget):
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
-        self._populate_mock_rows()
+        self._refresh_files_empty_state()
         self._update_visa_preview()
         self._update_usrp_command_preview()
         self._refresh_summary_metrics()
@@ -477,11 +477,21 @@ class CapturePage(QWidget):
 
         file_action_row = QHBoxLayout()
         file_action_row.setSpacing(10)
-        self.delete_file_button = QPushButton("删除选中记录")
+        self.delete_file_button = QPushButton("移除记录（不删文件）")
+        self.delete_file_button.setToolTip(
+            "只移除数据库中的原始记录和关联关系，不删除本地 .iq/.json/.cap 文件；"
+            "如需删除本地原始文件，请到“信号预处理 -> 原始文件”执行。"
+        )
         self.delete_file_button.clicked.connect(self._delete_selected_record)
         self.delete_file_button.setEnabled(False)
         file_action_row.addWidget(self.delete_file_button)
         file_action_row.addStretch(1)
+
+        self.files_empty_label = QLabel(
+            "当前暂无真实采集记录。完成 USRP 真实采集后，或后续接入 3943B 正式采集后，原始记录会显示在这里。"
+        )
+        self.files_empty_label.setObjectName("MutedText")
+        self.files_empty_label.setWordWrap(True)
 
         section.body_layout.addWidget(
             VisualInfoStrip(
@@ -492,18 +502,9 @@ class CapturePage(QWidget):
             )
         )
         section.body_layout.addWidget(self.files_table)
+        section.body_layout.addWidget(self.files_empty_label)
         section.body_layout.addLayout(file_action_row)
         return section
-
-    def _populate_mock_rows(self) -> None:
-        """Insert initial mock rows into the capture table."""
-
-        rows = [
-            ["20260415_213011_2400M_20M_drone_001.cap", "cap", "2400 MHz", "20 MHz", "3943B 样例 / drone_001", "样例"],
-            ["20260416_093205_5800M_40M_drone_007.cap", "cap", "5800 MHz", "40 MHz", "3943B 样例 / drone_007", "样例"],
-        ]
-        for row_data in rows:
-            self._append_row(row_data)
 
     def _append_row(self, row_data: list[str], *, file_path: str = "") -> None:
         """Append one row to the file table."""
@@ -520,7 +521,14 @@ class CapturePage(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, file_path)
             self.files_table.setItem(row_index, column, item)
         self._refresh_summary_metrics()
+        self._refresh_files_empty_state()
         self._sync_delete_file_button()
+
+    def _refresh_files_empty_state(self) -> None:
+        """Refresh the empty-state hint for the captured-file table."""
+
+        if hasattr(self, "files_empty_label"):
+            self.files_empty_label.setVisible(self.files_table.rowCount() == 0)
 
     def _apply_mode_change(self) -> None:
         """Switch the capture page between 3943B demo and USRP modes."""
@@ -929,6 +937,7 @@ class CapturePage(QWidget):
             self.files_table.removeRow(row)
             self._append_log(f"已从表格移除样例记录：{file_name}")
             self._refresh_summary_metrics()
+            self._refresh_files_empty_state()
             self._sync_delete_file_button()
             return
 
@@ -953,6 +962,7 @@ class CapturePage(QWidget):
             f"数据集关联 {counts.get('dataset_items', 0)} 条。本地文件未删除。"
         )
         self._refresh_summary_metrics()
+        self._refresh_files_empty_state()
         self._sync_delete_file_button()
         self.raw_records_changed.emit()
 

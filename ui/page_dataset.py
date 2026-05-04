@@ -29,15 +29,18 @@ from config import BASE_DIR
 from services import (
     DatasetVersionRecord,
     LabelMappingRecord,
+    OrphanFileRecord,
     SampleRecord,
     clear_processed_dataset_records,
     delete_label_mapping,
     delete_dataset_version,
+    delete_orphan_local_paths,
     delete_sample,
     delete_samples_by_device,
     init_database,
     list_dataset_versions,
     list_label_mappings,
+    list_orphan_local_paths,
     list_samples,
     upsert_label_mapping,
     upsert_samples,
@@ -589,7 +592,14 @@ class DatasetPage(QWidget):
         self.clear_database_button = QPushButton("清空样本数据库")
         self.clear_database_button.setObjectName("DangerButton")
         self.clear_database_button.clicked.connect(self._clear_processed_dataset_database)
+        self.orphan_cleanup_button = QPushButton("清理孤立文件")
+        self.orphan_cleanup_button.setToolTip(
+            "只扫描 data/raw、data/samples、data/datasets、data/models 中数据库无引用的文件或目录；"
+            "默认先预览，确认后才删除本地文件。"
+        )
+        self.orphan_cleanup_button.clicked.connect(self._preview_orphan_local_files)
         action_row.addWidget(self.clear_database_button)
+        action_row.addWidget(self.orphan_cleanup_button)
         action_row.addStretch(1)
 
         section.body_layout.addWidget(warning_label)
@@ -1009,6 +1019,7 @@ class DatasetPage(QWidget):
         )
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
+        self.orphan_cleanup_button.setEnabled(not running and not self._is_dataset_building())
 
     def _is_auto_labeling(self) -> bool:
         """返回当前是否存在正在执行的自动标注任务。"""
@@ -1216,6 +1227,76 @@ class DatasetPage(QWidget):
         )
         self.sample_records_updated.emit(self.get_sample_records())
         self.dataset_versions_updated.emit(self.get_dataset_versions())
+
+    def _preview_orphan_local_files(self) -> None:
+        """预览数据库无引用的本地运行文件，确认后再删除。"""
+
+        orphan_records = list_orphan_local_paths()
+        if not orphan_records:
+            self.dataset_build_status_label.setText(
+                "未发现孤立本地文件。扫描范围仅限 data/raw、data/samples、data/datasets、data/models。"
+            )
+            QMessageBox.information(
+                self,
+                "清理孤立文件",
+                "未发现数据库无引用的本地运行文件或目录。",
+            )
+            return
+
+        total_size = sum(record.size_bytes for record in orphan_records)
+        detail_text = "\n".join(self._orphan_record_line(record) for record in orphan_records[:200])
+        if len(orphan_records) > 200:
+            detail_text += f"\n... 另有 {len(orphan_records) - 200} 项未展开。"
+
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("清理孤立文件")
+        message.setText(
+            f"发现 {len(orphan_records)} 项数据库无引用的本地文件或目录，合计约 {self._format_bytes(total_size)}。"
+        )
+        message.setInformativeText(
+            "当前只扫描项目运行数据目录：data/raw、data/samples、data/datasets、data/models。\n"
+            "默认不会删除；点击删除后才会清理本地文件，且不会修改数据库记录。"
+        )
+        message.setDetailedText(detail_text)
+        delete_button = message.addButton("删除这些孤立文件", QMessageBox.ButtonRole.DestructiveRole)
+        close_button = message.addButton("仅预览，关闭", QMessageBox.ButtonRole.RejectRole)
+        message.setDefaultButton(close_button)
+        message.exec()
+
+        if message.clickedButton() != delete_button:
+            self.dataset_build_status_label.setText(
+                f"已预览 {len(orphan_records)} 项孤立文件，未执行删除。"
+            )
+            return
+
+        counts = delete_orphan_local_paths([record.path for record in orphan_records])
+        self.dataset_build_status_label.setText(
+            "孤立文件清理完成："
+            f"已删除 {counts.get('deleted', 0)} 项，"
+            f"已不存在 {counts.get('missing', 0)} 项，"
+            f"跳过 {counts.get('skipped', 0)} 项，"
+            f"失败 {counts.get('failed', 0)} 项。"
+        )
+
+    def _orphan_record_line(self, record: OrphanFileRecord) -> str:
+        """返回孤立文件预览列表中的一行文本。"""
+
+        kind = "目录" if record.is_dir else "文件"
+        return (
+            f"[{record.scope} / {kind}] {record.path} "
+            f"({self._format_bytes(record.size_bytes)}) - {record.reason}"
+        )
+
+    def _format_bytes(self, size_bytes: int) -> str:
+        """Format a byte count for compact UI text."""
+
+        value = float(max(size_bytes, 0))
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024.0 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024.0
+        return f"{value:.1f} GB"
 
     def _record_for_row(self, row: int) -> SampleRecord | None:
         """Return the backing sample record for one visible table row."""
@@ -1608,6 +1689,7 @@ class DatasetPage(QWidget):
         self.strategy_box.setEnabled(not running)
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
+        self.orphan_cleanup_button.setEnabled(not running and not self._is_auto_labeling())
         self.auto_label_button.setEnabled(not running and not self._is_auto_labeling())
         self.delete_device_samples_button.setEnabled(not running and self._current_device_for_bulk_delete() != "")
 

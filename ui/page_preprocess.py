@@ -298,6 +298,10 @@ class PreprocessPage(QWidget):
 
         self.delete_raw_file_button = QPushButton("删除选中文件")
         self.delete_raw_file_button.setObjectName("DangerButton")
+        self.delete_raw_file_button.setToolTip(
+            "用于原始文件列表：可选择只删除数据库记录，或同时删除本地原始文件；"
+            "USRP .iq/.bin 会连同同名 .json 元数据一起处理。"
+        )
         self.delete_raw_file_button.clicked.connect(self._delete_selected_raw_file)
         self.delete_raw_file_button.setEnabled(False)
 

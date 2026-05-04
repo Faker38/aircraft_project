@@ -181,7 +181,7 @@ class RecognitionPage(QWidget):
         status_badge = StatusBadge(status_text, "info", size="sm")
         result_card = SectionCard(
             "识别结果",
-            "显示当前样本标签、预测结果、置信度和模型信息。",
+            "显示当前样本标签、预测结果、预测置信度、适用域和模型信息。",
             right_widget=status_badge,
             compact=True,
         )

@@ -75,6 +75,23 @@ class RawFileRecord:
 
 
 @dataclass(frozen=True)
+class OrphanFileRecord:
+    """数据库无引用的本地运行文件或目录。"""
+
+    path: str
+    scope: str
+    size_bytes: int
+    reason: str
+    is_dir: bool = False
+
+    @property
+    def name(self) -> str:
+        """返回界面展示用名称。"""
+
+        return Path(self.path).name
+
+
+@dataclass(frozen=True)
 class DatasetVersionRecord:
     """数据集页和训练页共用的数据集版本摘要。"""
 

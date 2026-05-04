@@ -14,7 +14,9 @@
 - 预处理页 CAP 头预览与外部算法联调入口
 - 数据集管理页 SQLite 标注、删除/清空和版本生成
 - 数据集版本 `manifest.json` 生成与训练页数据检查
+- 数据集划分已支持真实“按样本随机分层”和“按设备个体隔离”
 - 类型识别真实训练、模型落盘与识别页真实推理
+- 识别页会提示模型适用域，预测置信度不等同于模型准确率
 
 ## 架构文档
 
@@ -42,6 +44,14 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## 提交前快速检查
+
+```powershell
+python -B tools/smoke_checks.py
+```
+
+该脚本会执行 Python AST、数据集划分语义、识别页域外提示和 Qt `minimal` 主窗口实例化检查，不依赖 pytest。
+
 程序启动后会自动创建以下目录：
 
 - `data/`
@@ -55,7 +65,7 @@ python main.py
 当前联调主流程为：
 
 ```text
-CAP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> manifest.json -> 本地真实训练 -> 本地真实识别
+CAP/USRP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> manifest.json -> 本地真实训练 -> 本地真实识别
 ```
 
 数据集管理页已支持：
@@ -64,6 +74,7 @@ CAP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> man
 - 维护“设备编号-类型标签-个体标签”映射表并自动标注
 - 控制样本是否纳入数据集
 - 删除样本、删除版本和清空样本数据库
+- 清理数据库无引用的本地孤立文件，默认先预览，确认后才删除
 - 生成 `data/datasets/{version_id}/manifest.json`
 - 训练 `data/models/{model_id}/model.joblib` 与 `metadata.json`
 
@@ -82,6 +93,9 @@ CAP 预处理输出样本 -> SQLite 标注管理 -> 生成数据集版本 -> man
 - USRP B210 已按 UHD Windows 默认安装目录做自动命令定位；安装器 PATH 写入失败时仍可使用软件采集入口
 - 当前 B210 演示默认使用已验通的 USB2 保守档：`1 Msps / 2 s / 2.4 GHz / 20 dB / RX2`
 - 信号预处理页新增 `USRP IQ 演示预处理`，可将 B210 `.iq + .json` 切片成 `.npy` 样本并衔接标注、训练和识别
+- USRP 演示预处理会登记 `raw_files / preprocess_tasks / samples`，便于追溯和删除关联关系
+- 识别页允许选择任意预处理样本；若样本来源、中心频率或采样率超出模型训练范围，会显示“域外样本，结果仅供参考”
+- 页面中的“预测置信度”是闭集模型最大类别概率，不是测试准确率
 - `qt-material` 未安装时，程序会自动回退到内置样式
 
 ## 目录结构
