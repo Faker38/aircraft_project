@@ -34,12 +34,9 @@ def print_runtime_diagnostics() -> None:
     except Exception as exc:
         print(f"[环境] numpy: 导入失败: {exc}")
 
-    try:
-        import cv2
-
-        print(f"[环境] cv2: {cv2.__version__}")
-    except Exception as exc:
-        print(f"[环境] cv2: 导入失败: {exc}")
+    # OpenCV is not required by the current desktop workflow. Skip importing it here
+    # so optional package DLL problems do not pollute startup logs.
+    print("[环境] cv2: 未检查（当前主流程不依赖）")
 
 
 def main() -> int:

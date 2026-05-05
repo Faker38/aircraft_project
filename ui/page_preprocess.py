@@ -263,13 +263,13 @@ class PreprocessPage(QWidget):
     def _build_file_card(self) -> SectionCard:
         """创建 CAP 文件选择卡片。"""
 
-        section = SectionCard("原始文件", "支持 CAP 算法预处理和 USRP IQ 演示预处理两条入口。", compact=True)
+        section = SectionCard("原始文件", "支持 CAP 流程测试预处理和 USRP IQ 三阶段对齐预处理两条入口。", compact=True)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(10)
         mode_row.addWidget(QLabel("输入模式"))
         self.input_mode_box = QComboBox()
-        self.input_mode_box.addItems(["CAP 算法预处理", "USRP IQ 演示预处理"])
+        self.input_mode_box.addItems(["CAP 算法预处理", "USRP IQ 三阶段预处理"])
         self.input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
         mode_row.addWidget(self.input_mode_box)
         mode_row.addStretch(1)
@@ -1146,7 +1146,7 @@ class PreprocessPage(QWidget):
                 self.sample_records_generated.emit(result.sample_records)
                 if isinstance(result, USRPDemoPreprocessResult):
                     self.config_status_label.setText(
-                        f"本次已同步 {len(result.sample_records)} 条 USRP 候选样本，设备映射表已按新频点自动补齐。"
+                        f"本次已同步 {len(result.sample_records)} 条 USRP 三阶段候选样本，可直接进入数据集管理进行标注确认。"
                     )
                 else:
                     self.config_status_label.setText(
@@ -1180,14 +1180,9 @@ class PreprocessPage(QWidget):
         if isinstance(result, USRPDemoPreprocessResult):
             try:
                 save_usrp_preprocess_result(result)
-                mapping_count = upsert_usrp_label_mappings(result.sample_records)
-                if mapping_count:
-                    self.config_status_label.setText(
-                        f"USRP 演示预处理已写入样本，并自动补齐 {mapping_count} 条设备映射。"
-                    )
                 self.workflow_records_changed.emit()
             except Exception as exc:
-                self.config_status_label.setText(f"USRP 演示预处理已完成，但数据库写入失败：{exc}")
+                self.config_status_label.setText(f"USRP 三阶段预处理已完成，但数据库写入失败：{exc}")
             return
 
         if self._last_run_config is None:

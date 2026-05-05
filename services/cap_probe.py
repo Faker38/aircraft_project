@@ -1,10 +1,12 @@
-"""CAP 只读探针工具：用于预览头字段和 IQ 摘要。"""
+"""CAP probe helpers for previewing headers and decoding complex IQ."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 import struct
+
+import numpy as np
 
 
 HEADER_LENGTH = 0x200
@@ -13,12 +15,12 @@ STAT_WINDOW_BYTES = 1024 * 1024
 
 
 class CapProbeError(RuntimeError):
-    """当 CAP 文件无法安全探测时抛出。"""
+    """Raised when a CAP file cannot be parsed safely."""
 
 
 @dataclass(frozen=True)
 class IQStatistics:
-    """一个 IQ 采样窗口的统计摘要。"""
+    """Summary statistics for one IQ sample window."""
 
     sample_count: int
     i_mean: float
@@ -33,7 +35,7 @@ class IQStatistics:
 
 @dataclass(frozen=True)
 class CapProbeResult:
-    """从 CAP 文件中提取出的结构化预览结果。"""
+    """Structured CAP preview metadata used by the UI and preprocess layer."""
 
     path: Path
     file_size: int
@@ -53,31 +55,30 @@ class CapProbeResult:
 
 
 def probe_cap_file(path: Path) -> CapProbeResult:
-    """读取 CAP 头字段和少量 IQ 预览窗口。"""
+    """Read the CAP header and a small IQ preview window."""
 
     file_path = Path(path)
     if file_path.suffix.lower() != ".cap":
-        raise CapProbeError("仅支持读取 .cap 文件。")
+        raise CapProbeError("Only .cap files are supported.")
     if not file_path.exists():
-        raise CapProbeError("文件不存在，无法执行导入预览。")
+        raise CapProbeError("CAP file does not exist.")
 
     file_size = file_path.stat().st_size
     if file_size <= HEADER_LENGTH:
-        raise CapProbeError("文件长度不足，未达到有效 CAP 头部和 IQ 数据区。")
+        raise CapProbeError("CAP file is shorter than the fixed header.")
     if (file_size - HEADER_LENGTH) % 4 != 0:
-        raise CapProbeError("文件大小与 IQ 对齐规则不符，无法按 I/Q 交织解析。")
+        raise CapProbeError("CAP payload is not aligned to int16 IQ pairs.")
 
     with file_path.open("rb") as handle:
         header = handle.read(HEADER_LENGTH)
         if len(header) < HEADER_LENGTH:
-            raise CapProbeError("读取 CAP 头部失败。")
+            raise CapProbeError("Failed to read the CAP header.")
 
         version_bytes = header[0x0000:0x0008]
         version = version_bytes.split(b"\x00", 1)[0].decode("ascii", errors="replace")
         if not version.startswith("B."):
-            raise CapProbeError("文件头版本标记异常，不符合当前 CAP 预览规则。")
+            raise CapProbeError("CAP version marker is not recognized.")
 
-        # 当前联调口径：0x0010 先解释为分析带宽，再按 1.28 推导实际采样率。
         bandwidth_hz = struct.unpack(">d", header[0x0010:0x0018])[0]
         sample_rate_hz = bandwidth_hz * 1.28
         center_frequency_hz = struct.unpack(">d", header[0x0018:0x0020])[0]
@@ -94,9 +95,9 @@ def probe_cap_file(path: Path) -> CapProbeResult:
         statistics = _build_statistics(statistics_bytes)
 
     unresolved_fields = (
-        "0x0008 未确认参数",
-        "0x0020 - 0x00FF 其他设备参数",
-        "带宽/增益/时间戳编码方式仍需更多样本交叉验证",
+        "0x0008 parameter meaning is still unconfirmed",
+        "0x0020-0x00FF device-specific fields still need validation",
+        "bandwidth, gain, and time-encoding assumptions should be cross-checked on more samples",
     )
     return CapProbeResult(
         path=file_path,
@@ -117,8 +118,37 @@ def probe_cap_file(path: Path) -> CapProbeResult:
     )
 
 
+def load_cap_complex_iq(path: Path) -> np.ndarray:
+    """Load the CAP payload as one complex64 IQ sequence."""
+
+    file_path = Path(path)
+    if file_path.suffix.lower() != ".cap":
+        raise CapProbeError("Only .cap files are supported.")
+    if not file_path.exists():
+        raise CapProbeError("CAP file does not exist.")
+
+    file_size = file_path.stat().st_size
+    payload_size = file_size - HEADER_LENGTH
+    if payload_size <= 0:
+        raise CapProbeError("CAP payload is empty.")
+    if payload_size % 4 != 0:
+        raise CapProbeError("CAP payload is not aligned to int16 IQ pairs.")
+
+    with file_path.open("rb") as handle:
+        handle.seek(HEADER_LENGTH)
+        payload = handle.read()
+
+    iq_int16 = np.frombuffer(payload, dtype=">i2")
+    if iq_int16.size % 2 != 0:
+        raise CapProbeError("CAP payload does not contain complete IQ pairs.")
+
+    i_values = iq_int16[0::2].astype(np.float32, copy=False)
+    q_values = iq_int16[1::2].astype(np.float32, copy=False)
+    return (i_values + 1j * q_values).astype(np.complex64, copy=False)
+
+
 def _decode_iq_pairs(data: bytes) -> list[tuple[int, int]]:
-    """把 CAP IQ 字节块按大端 int16 的 I/Q 对解码。"""
+    """Decode interleaved big-endian int16 IQ pairs."""
 
     if not data:
         return []
@@ -127,11 +157,11 @@ def _decode_iq_pairs(data: bytes) -> list[tuple[int, int]]:
 
 
 def _build_statistics(data: bytes) -> IQStatistics:
-    """为限定 IQ 数据窗口计算统计量。"""
+    """Compute statistics for one IQ data window."""
 
     pairs = _decode_iq_pairs(data)
     if not pairs:
-        raise CapProbeError("IQ 数据区为空，无法生成导入预览。")
+        raise CapProbeError("CAP IQ payload window is empty.")
 
     i_values = [i_value for i_value, _ in pairs]
     q_values = [q_value for _, q_value in pairs]
@@ -155,7 +185,7 @@ def _build_statistics(data: bytes) -> IQStatistics:
 
 
 def _population_std(values: list[int], mean: float) -> float:
-    """计算一组数据的总体标准差。"""
+    """Compute the population standard deviation for one list of values."""
 
     variance = sum((value - mean) ** 2 for value in values) / len(values)
     return variance ** 0.5

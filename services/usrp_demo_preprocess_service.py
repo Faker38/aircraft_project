@@ -1,39 +1,36 @@
-"""USRP IQ demo preprocessing.
-
-This module bridges UHD ``rx_samples_to_file`` output into the existing
-dataset/training/recognition workflow without changing the CAP algorithm path.
-"""
+"""USRP IQ preprocessing aligned with the success_three_stage candidate extractor."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 import json
 from pathlib import Path
 import re
 from typing import Any
 
 import numpy as np
+from scipy.signal import resample_poly
 
 from config import RAW_DATA_DIR, SAMPLES_DIR
 from services.cap_probe import IQStatistics, PREVIEW_PAIR_COUNT, STAT_WINDOW_BYTES
+from services.three_stage_service import (
+    THREE_STAGE_FS_HZ,
+    ThreeStageServiceError,
+    extract_candidate_bursts_from_complex_iq,
+)
 from services.workflow_records import SampleRecord
 
 
-DEFAULT_USRP_DEMO_SLICE_LENGTH = 8192
+DEFAULT_USRP_DEMO_SLICE_LENGTH = 4096
 DEFAULT_USRP_DEMO_MAX_SEGMENTS = 120
 USRP_DEMO_SOURCE_TYPE = "usrp_preprocess"
-USRP_DEMO_SOURCE_NAME = "USRP 预处理输出"
-
-FREQUENCY_LABELS_MHZ: dict[int, str] = {
-    2412: "频点A",
-    2437: "频点B",
-    2462: "频点C",
-}
+USRP_DEMO_SOURCE_NAME = "USRP 三阶段对齐预处理"
 
 
 class USRPDemoPreprocessError(RuntimeError):
-    """Raised when USRP demo preprocessing cannot continue safely."""
+    """Raised when USRP IQ preprocessing cannot continue safely."""
 
 
 @dataclass(frozen=True)
@@ -58,7 +55,7 @@ class USRPDemoPreprocessInfo:
 
 @dataclass(frozen=True)
 class USRPDemoPreprocessConfig:
-    """Configuration for converting one USRP IQ capture into demo samples."""
+    """Configuration for converting one USRP IQ capture into aligned candidate samples."""
 
     input_file_path: str
     slice_length: int
@@ -69,7 +66,7 @@ class USRPDemoPreprocessConfig:
 
 @dataclass(frozen=True)
 class USRPDemoPreprocessResult:
-    """USRP demo preprocessing result consumed by the Qt page."""
+    """USRP IQ preprocessing result consumed by the Qt page."""
 
     success: bool
     message: str
@@ -84,7 +81,7 @@ class USRPDemoPreprocessResult:
 
 
 def default_usrp_demo_output_dir() -> Path:
-    """Return the default output directory for USRP demo samples."""
+    """Return the default output directory for aligned USRP samples."""
 
     return SAMPLES_DIR / "usrp_demo_output"
 
@@ -107,7 +104,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
     iq_path = Path(path)
     if iq_path.suffix.lower() != ".iq":
-        raise USRPDemoPreprocessError("USRP 演示预处理仅支持 .iq 文件。")
+        raise USRPDemoPreprocessError("USRP 预处理仅支持 .iq 文件。")
     if not iq_path.exists():
         raise USRPDemoPreprocessError("USRP IQ 文件不存在。")
     if iq_path.stat().st_size <= 0 or iq_path.stat().st_size % 4 != 0:
@@ -115,7 +112,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
     metadata_path = iq_path.with_suffix(".json")
     if not metadata_path.exists():
-        raise USRPDemoPreprocessError("未找到同名 .json 元数据文件，无法进入演示预处理。")
+        raise USRPDemoPreprocessError("未找到同名 .json 元数据文件。")
 
     metadata = _read_metadata(metadata_path)
     iq_pair_count = iq_path.stat().st_size // 4
@@ -125,6 +122,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
     values = np.fromfile(iq_path, dtype="<i2", count=max(statistics_pairs * 2, preview_pairs_count * 2))
     if values.size < 2:
         raise USRPDemoPreprocessError("USRP IQ 数据区为空。")
+
     pairs = values[: statistics_pairs * 2].reshape(-1, 2)
     statistics = _build_statistics(pairs)
     preview_pairs = [
@@ -151,7 +149,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
 
 def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPreprocessResult:
-    """Convert a UHD IQ capture into labeled demo samples for downstream pages."""
+    """Convert a UHD IQ capture into candidate samples using the three-stage-aligned extractor."""
 
     input_info = preview_usrp_iq_file(config.input_file_path)
     slice_length = max(1024, int(config.slice_length))
@@ -159,60 +157,58 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
     output_dir = Path(config.sample_output_dir or default_usrp_demo_output_dir())
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw = np.memmap(input_info.path, dtype="<i2", mode="r")
-    if raw.size % 2 != 0:
-        raise USRPDemoPreprocessError("USRP IQ 文件不是合法的 I/Q 交织序列。")
-    iq_pairs = raw.reshape(-1, 2)
-    window_count = int(iq_pairs.shape[0] // slice_length)
-    if window_count <= 0:
-        raise USRPDemoPreprocessError("USRP IQ 文件长度不足，无法按当前切片长度生成样本。")
-
-    window_stats = _score_windows(iq_pairs, window_count, slice_length)
-    power_values = np.asarray([item["power_db"] for item in window_stats], dtype=np.float64)
-    median_power_db = float(np.median(power_values)) if power_values.size else -120.0
-    threshold_db = median_power_db + float(config.energy_threshold_db)
-
-    candidates = [
-        item
-        for item in window_stats
-        if item["power_db"] >= threshold_db and item["rms"] > 0.0 and item["clip_pct"] <= 1.0
+    raw_complex_iq = _load_usrp_complex_iq(input_info.path)
+    logs = [
+        f"[Start] USRP 三阶段对齐预处理：{input_info.path.name}",
+        f"[Info] 输入采样率 {input_info.sample_rate_hz / 1_000_000:.3f} MHz，中心频率 {input_info.center_frequency_hz / 1_000_000:.3f} MHz。",
+        f"[Info] 切片长度 {slice_length}，最大候选输出 {max_segments}。",
     ]
-    if not candidates:
-        candidates = sorted(window_stats, key=lambda item: item["power_db"], reverse=True)[: min(max_segments, 12)]
 
-    selected = sorted(candidates, key=lambda item: item["power_db"], reverse=True)[:max_segments]
-    selected = sorted(selected, key=lambda item: item["index"])
+    try:
+        aligned_iq = _align_iq_for_three_stage(raw_complex_iq, input_info.sample_rate_hz, logs)
+        bursts = extract_candidate_bursts_from_complex_iq(
+            aligned_iq,
+            sample_rate_hz=THREE_STAGE_FS_HZ,
+            slice_len=slice_length,
+        )
+    except (ThreeStageServiceError, ValueError, OSError) as exc:
+        raise USRPDemoPreprocessError(str(exc)) from exc
 
-    label = suggest_usrp_demo_label(input_info.center_frequency_hz)
+    selected_bursts = bursts[:max_segments]
+    safe_stem = _slugify(input_info.path.stem)
+    device_id = _slugify(input_info.path.stem) or datetime.now().strftime("usrp_%Y%m%d_%H%M%S")
     records: list[SampleRecord] = []
     segments: list[dict[str, Any]] = []
-    safe_stem = _slugify(input_info.path.stem)
-    device_id = f"usrp_{int(round(input_info.center_frequency_hz / 1_000_000))}M"
 
-    for ordinal, item in enumerate(selected, start=1):
-        start_sample = int(item["index"] * slice_length)
-        end_sample = int(start_sample + slice_length)
-        sample_iq = iq_pairs[start_sample:end_sample].astype(np.float32, copy=True)
-        complex_iq = (sample_iq[:, 0] + 1j * sample_iq[:, 1]).astype(np.complex64, copy=False)
+    for ordinal, burst in enumerate(selected_bursts, start=1):
+        pure_iq = np.asarray(burst.get("pure_iq"))
+        if pure_iq.size == 0:
+            continue
+
         segment_id = f"usrp_{ordinal:04d}"
         output_path = output_dir / f"{safe_stem}_{segment_id}.npy"
-        np.save(output_path, complex_iq, allow_pickle=False)
+        np.save(output_path, pure_iq.astype(np.complex64, copy=False), allow_pickle=False)
 
-        duration_ms = slice_length / max(input_info.sample_rate_hz, 1.0) * 1000.0
-        snr_db = float(item["power_db"] - median_power_db)
-        score = float(item["power_db"])
+        start_sample = int(burst.get("start_idx", 0))
+        end_sample = int(burst.get("end_idx", 0))
+        bandwidth_hz = float(burst.get("bandwidth_hz", 0.0))
+        slice_count = int(burst.get("slice_count", 0))
+        duration_ms = pure_iq.size / max(THREE_STAGE_FS_HZ, 1.0) * 1000.0
+        score = float(slice_count)
+        center_frequency_hz = float(input_info.center_frequency_hz + burst.get("center_freq_offset_hz", 0.0))
+
         segments.append(
             {
                 "segment_id": segment_id,
                 "start_sample": start_sample,
                 "end_sample": end_sample,
                 "duration_ms": duration_ms,
-                "center_freq_hz": input_info.center_frequency_hz,
-                "bandwidth_hz": input_info.bandwidth_hz,
-                "snr_db": snr_db,
+                "center_freq_hz": center_frequency_hz,
+                "bandwidth_hz": bandwidth_hz,
+                "snr_db": 0.0,
                 "score": score,
                 "output_file_path": str(output_path),
-                "status": "已保存",
+                "status": "aligned_candidate",
             }
         )
         records.append(
@@ -221,36 +217,39 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
                 source_type=USRP_DEMO_SOURCE_TYPE,
                 raw_file_path=str(input_info.path),
                 sample_file_path=str(output_path),
-                label_type=label,
-                label_individual=f"{label}_001",
-                sample_rate_hz=input_info.sample_rate_hz,
-                center_frequency_hz=input_info.center_frequency_hz,
+                label_type="",
+                label_individual="",
+                sample_rate_hz=THREE_STAGE_FS_HZ,
+                center_frequency_hz=center_frequency_hz,
                 data_format="complex64_npy",
-                sample_count=int(complex_iq.size),
+                sample_count=int(pure_iq.size),
                 device_id=device_id,
                 start_sample=start_sample,
                 end_sample=end_sample,
-                snr_db=snr_db,
+                snr_db=0.0,
                 score=score,
                 include_in_dataset=True,
-                status="已标注",
+                status="待标注",
                 source_name=USRP_DEMO_SOURCE_NAME,
             )
         )
+        logs.append(
+            f"[Burst] {segment_id}: slices={slice_count}, samples={pure_iq.size}, bw={bandwidth_hz / 1e6:.2f} MHz"
+        )
 
-    logs = [
-        f"[Start] USRP IQ 演示预处理：{input_info.path.name}",
-        f"[Info] 采样率 {input_info.sample_rate_hz / 1_000_000:.3f} MHz，中心频率 {input_info.center_frequency_hz / 1_000_000:.3f} MHz。",
-        f"[Info] 切片长度 {slice_length}，候选窗口 {window_count}，能量阈值 {threshold_db:.2f} dB。",
-        f"[Info] 演示标签建议：{label}。本标签仅表示现场频点类别，不代表无人机型号。",
-        f"[Done] 已保存 {len(records)} 条 USRP 演示样本：{output_dir}",
-    ]
+    if records:
+        message = f"USRP 三阶段对齐预处理完成，已生成 {len(records)} 条候选样本。"
+        logs.append(f"[Done] 已保存 {len(records)} 条三阶段对齐候选样本到 {output_dir}")
+    else:
+        message = "未提取到符合三阶段规则的候选信号段。"
+        logs.append(f"[Done] {message}")
+
     return USRPDemoPreprocessResult(
         success=bool(records),
-        message=f"USRP IQ 演示预处理完成，已生成 {len(records)} 条样本。",
+        message=message,
         input_info=input_info,
         detected_segment_count=len(records),
-        candidate_segment_count=window_count,
+        candidate_segment_count=len(selected_bursts),
         output_sample_count=len(records),
         sample_output_dir=str(output_dir),
         segments=segments,
@@ -260,13 +259,9 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
 
 
 def suggest_usrp_demo_label(center_frequency_hz: float) -> str:
-    """Return the demo label for the nearest configured Wi-Fi frequency."""
+    """Compatibility hook kept for existing imports."""
 
-    mhz = int(round(float(center_frequency_hz) / 1_000_000))
-    nearest = min(FREQUENCY_LABELS_MHZ, key=lambda value: abs(value - mhz))
-    if abs(nearest - mhz) <= 3:
-        return FREQUENCY_LABELS_MHZ[nearest]
-    return f"频点{mhz}M"
+    return f"{int(round(float(center_frequency_hz) / 1_000_000))}M"
 
 
 def _read_metadata(path: Path) -> dict[str, Any]:
@@ -277,6 +272,30 @@ def _read_metadata(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise USRPDemoPreprocessError("USRP 元数据 JSON 格式异常。")
     return payload
+
+
+def _load_usrp_complex_iq(path: Path) -> np.ndarray:
+    raw = np.fromfile(path, dtype="<i2")
+    if raw.size == 0 or raw.size % 2 != 0:
+        raise USRPDemoPreprocessError("USRP IQ 文件不是合法的 I/Q 交织序列。")
+    iq_pairs = raw.reshape(-1, 2).astype(np.float32, copy=False)
+    return (iq_pairs[:, 0] + 1j * iq_pairs[:, 1]).astype(np.complex64, copy=False)
+
+
+def _align_iq_for_three_stage(iq: np.ndarray, source_rate_hz: float, logs: list[str]) -> np.ndarray:
+    if source_rate_hz <= 0:
+        raise USRPDemoPreprocessError("USRP 元数据中的采样率无效。")
+    if abs(source_rate_hz - THREE_STAGE_FS_HZ) <= 1.0:
+        logs.append("[Info] 输入 IQ 已经匹配三阶段 80 MHz 采样率。")
+        return iq.astype(np.complex64, copy=False)
+
+    ratio = Fraction(THREE_STAGE_FS_HZ / source_rate_hz).limit_denominator(512)
+    logs.append(
+        f"[Info] 将 IQ 从 {source_rate_hz / 1e6:.3f} MHz 重采样到 {THREE_STAGE_FS_HZ / 1e6:.1f} MHz，比例 {ratio.numerator}/{ratio.denominator}。"
+    )
+    real = resample_poly(iq.real.astype(np.float32, copy=False), ratio.numerator, ratio.denominator)
+    imag = resample_poly(iq.imag.astype(np.float32, copy=False), ratio.numerator, ratio.denominator)
+    return (real + 1j * imag).astype(np.complex64, copy=False)
 
 
 def _build_statistics(pairs: np.ndarray) -> IQStatistics:
@@ -295,29 +314,6 @@ def _build_statistics(pairs: np.ndarray) -> IQStatistics:
         q_min=int(np.min(q_values)),
         q_max=int(np.max(q_values)),
     )
-
-
-def _score_windows(iq_pairs: np.ndarray, window_count: int, slice_length: int) -> list[dict[str, float]]:
-    stats: list[dict[str, float]] = []
-    for index in range(window_count):
-        start = index * slice_length
-        end = start + slice_length
-        window = iq_pairs[start:end].astype(np.float32, copy=False)
-        complex_iq = window[:, 0] + 1j * window[:, 1]
-        amplitude = np.abs(complex_iq).astype(np.float64, copy=False)
-        power = float(np.mean(np.square(amplitude)))
-        rms = float(np.sqrt(power))
-        power_db = float(10.0 * np.log10(power + 1e-12))
-        clip_count = int(np.count_nonzero((np.abs(window[:, 0]) >= 32760) | (np.abs(window[:, 1]) >= 32760)))
-        stats.append(
-            {
-                "index": float(index),
-                "rms": rms,
-                "power_db": power_db,
-                "clip_pct": clip_count / max(slice_length, 1) * 100.0,
-            }
-        )
-    return stats
 
 
 def _slugify(value: str) -> str:

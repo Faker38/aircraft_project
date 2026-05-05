@@ -1,6 +1,6 @@
 """桌面端应用的服务层导出。"""
 
-from services.cap_probe import CapProbeError, CapProbeResult, probe_cap_file
+from services.cap_probe import CapProbeError, CapProbeResult, load_cap_complex_iq, probe_cap_file
 from services.database import (
     clear_processed_dataset_records,
     create_dataset_version,
@@ -40,7 +40,24 @@ from services.model_service import (
     extract_iq_features,
     load_trained_model,
     predict_type_sample,
+    predict_three_stage_sample,
     train_type_model,
+)
+from services.three_stage_service import (
+    ThreeStageInferenceConfig,
+    ThreeStageServiceError,
+    build_three_stage_config,
+    default_three_stage_config,
+    extract_candidate_bursts_from_complex_iq,
+    run_three_stage_inference,
+)
+from services.three_stage_runtime import (
+    ThreeStageRuntimeSelection,
+    get_three_stage_runtime_selection,
+    resolve_three_stage_warmup_sample,
+    set_three_stage_runtime_selection,
+    validate_three_stage_selection,
+    warmup_three_stage_runtime,
 )
 from services.preprocess_adapter import (
     PreprocessAdapterError,
@@ -87,6 +104,8 @@ from services.workflow_records import (
     PredictionResult,
     RawFileRecord,
     SampleRecord,
+    ThreeStageBurstResult,
+    ThreeStagePredictionResult,
     TrainedModelRecord,
     TrainingMetricRow,
     TrainingRunResult,
@@ -128,6 +147,20 @@ __all__ = [
     "load_trained_model",
     "ModelServiceError",
     "predict_type_sample",
+    "predict_three_stage_sample",
+    "ThreeStageInferenceConfig",
+    "ThreeStageRuntimeSelection",
+    "ThreeStageServiceError",
+    "build_three_stage_config",
+    "default_three_stage_config",
+    "extract_candidate_bursts_from_complex_iq",
+    "get_three_stage_runtime_selection",
+    "resolve_three_stage_warmup_sample",
+    "load_cap_complex_iq",
+    "run_three_stage_inference",
+    "set_three_stage_runtime_selection",
+    "validate_three_stage_selection",
+    "warmup_three_stage_runtime",
     "probe_cap_file",
     "resolve_default_model_weights_path",
     "run_preprocess",
@@ -169,6 +202,8 @@ __all__ = [
     "PredictionResult",
     "RawFileRecord",
     "SampleRecord",
+    "ThreeStageBurstResult",
+    "ThreeStagePredictionResult",
     "TrainedModelRecord",
     "TrainingMetricRow",
     "TrainingRunResult",

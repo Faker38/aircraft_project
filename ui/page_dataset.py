@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import BASE_DIR
+from config import MANUAL_MAT_IMPORT_DIR
 from services import (
     DatasetVersionRecord,
     LabelMappingRecord,
@@ -177,6 +179,74 @@ class DatasetPage(QWidget):
         )
         self.sample_records_updated.emit(self.get_sample_records())
 
+    def _import_manual_mat_samples_from_ui(self) -> None:
+        """Handle the dataset-page button for importing MAT files from the workspace root."""
+
+        count = self.import_manual_mat_samples()
+        if count:
+            self._refresh_sample_table()
+            self._sync_device_filter_options()
+            self._refresh_annotation_metrics()
+            self._apply_filters()
+            self._sync_review_form_from_selection()
+            self._refresh_dataset_generation_controls(update_status=False)
+
+    def import_manual_mat_samples(self) -> int:
+        """Import MAT files copied into the workspace root as persistent sample records."""
+
+        root_dir = BASE_DIR.parent
+        records: list[SampleRecord] = []
+        for mat_path in sorted(root_dir.glob("*.mat")):
+            managed_path = self._copy_manual_mat_to_managed_dir(mat_path)
+            records.append(self._build_manual_mat_record(managed_path, original_path=mat_path))
+
+        if not records:
+            self.annotation_status_label.setText("工作区根目录未找到可导入的 .mat 文件。")
+            return 0
+
+        upsert_samples(records)
+        self.refresh_from_database(emit_signals=False)
+        self.annotation_status_label.setText(f"已复制到受管目录并入库 {len(records)} 条手动 MAT 样本。")
+        self.sample_records_updated.emit(self.get_sample_records())
+        return len(records)
+
+    def _copy_manual_mat_to_managed_dir(self, mat_path: Path) -> Path:
+        """Copy one workspace MAT file into the managed sample directory."""
+
+        MANUAL_MAT_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+        target_path = MANUAL_MAT_IMPORT_DIR / mat_path.name
+        if not target_path.exists() or target_path.stat().st_size != mat_path.stat().st_size:
+            target_path.write_bytes(mat_path.read_bytes())
+        return target_path
+
+    def _build_manual_mat_record(self, mat_path: Path, *, original_path: Path | None = None) -> SampleRecord:
+        """Build a persistent sample record for one manually copied MAT file."""
+
+        stem_parts = mat_path.stem.split("_")
+        inferred_label = stem_parts[0][0] if stem_parts and stem_parts[0] else ""
+        inferred_individual = stem_parts[0] if stem_parts else ""
+        sample_count = int(mat_path.stat().st_size // 8) if mat_path.exists() else 0
+        return SampleRecord(
+            sample_id=f"manual_mat::{mat_path.stem}",
+            source_type="manual_mat",
+            raw_file_path=str(original_path or mat_path),
+            sample_file_path=str(mat_path),
+            label_type=inferred_label,
+            label_individual=inferred_individual,
+            sample_rate_hz=80e6,
+            center_frequency_hz=0.0,
+            data_format=".mat",
+            sample_count=sample_count,
+            device_id="manual_mat",
+            start_sample=0,
+            end_sample=sample_count,
+            snr_db=0.0,
+            score=0.0,
+            include_in_dataset=True,
+            status="已标注",
+            source_name="manual_mat",
+        )
+
     def _build_sample_flow_card(self) -> SectionCard:
         """Create the simplified processed-sample workflow card."""
 
@@ -202,11 +272,19 @@ class DatasetPage(QWidget):
         info_layout.addRow("已标注样本", self.ready_value)
         info_layout.addRow("当前下一步", next_step_value)
 
-        hint_label = QLabel("当前样本统一来自预处理输出，建议按来源批次完成标签确认，再生成类型识别数据集版本。")
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self.import_manual_mat_button = QPushButton("导入并入库 MAT")
+        self.import_manual_mat_button.clicked.connect(self._import_manual_mat_samples_from_ui)
+        action_row.addWidget(self.import_manual_mat_button)
+        action_row.addStretch(1)
+
+        hint_label = QLabel("点击后会把工作区根目录的 .mat 复制到受管目录并写入样本库，然后再进行标签确认。")
         hint_label.setObjectName("MutedText")
         hint_label.setWordWrap(True)
 
         section.body_layout.addLayout(info_layout)
+        section.body_layout.addLayout(action_row)
         section.body_layout.addWidget(hint_label)
         return section
 

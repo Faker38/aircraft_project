@@ -48,6 +48,7 @@ class SampleRecord:
         return {
             "local_preprocess": "预处理输出",
             "usrp_preprocess": "USRP 预处理输出",
+            "manual_mat": "手动 MAT 样本",
         }.get(self.source_type, "未知来源")
 
 
@@ -251,3 +252,29 @@ class ModelEvaluationResult:
     metric_rows: list[TrainingMetricRow] = field(default_factory=list)
     logs: list[str] = field(default_factory=list)
     label_space: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ThreeStageBurstResult:
+    burst_idx: int
+    start_idx: int
+    end_idx: int
+    center_freq_offset_hz: float
+    bandwidth_hz: float
+    slice_count: int
+    binary_result: dict[str, object] = field(default_factory=dict)
+    type_result: dict[str, object] = field(default_factory=dict)
+    individual_result: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ThreeStagePredictionResult:
+    status: str
+    detected_candidate_bursts: int
+    accepted_drone_bursts: int
+    overall_type_result: dict[str, object] | None
+    overall_individual_result: dict[str, object] | None
+    file: str
+    burst_results: list[ThreeStageBurstResult] = field(default_factory=list)
+    stats: dict[str, object] = field(default_factory=dict)
+    timings: dict[str, object] = field(default_factory=dict)

@@ -18,6 +18,15 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from config import MODELS_DIR
 from services.database import get_dataset_version_detail, get_trained_model, save_trained_model, write_dataset_manifest
 from services.workflow_records import PredictionResult, TrainingMetricRow, TrainingRunResult, TrainedModelRecord
+from services.three_stage_service import (
+    ThreeStageInferenceConfig,
+    ThreeStageServiceError,
+    build_three_stage_config,
+    default_three_stage_config,
+    run_three_stage_inference,
+    run_three_stage_inference_streaming,
+)
+from services.three_stage_runtime import get_three_stage_runtime_selection
 
 
 FEATURE_NAMES: tuple[str, ...] = (
@@ -315,6 +324,41 @@ def load_trained_model(model_id: str) -> dict[str, Any]:
 def predict_type_sample(model_id: str, sample_file_path: str) -> PredictionResult:
     """使用一个已训练模型对单条样本执行类型识别。"""
 
+    if model_id == "three_stage_deployed":
+        sample_path = Path(sample_file_path)
+        if not sample_path.exists():
+            raise ModelServiceError(f"鏍锋湰鏂囦欢涓嶅瓨鍦細{sample_path}")
+
+        raw_result = predict_three_stage_sample(str(sample_path), input_path_kind="auto")
+        overall_type = raw_result.get("overall_type_result") if isinstance(raw_result, dict) else None
+        probabilities = (
+            {str(key): float(value) for key, value in overall_type.get("class_probabilities", {}).items()}
+            if isinstance(overall_type, dict)
+            else {}
+        )
+        predicted_label = str(
+            (overall_type or {}).get("predicted_class_name")
+            or ("NOISE" if raw_result.get("status") == "no_drone_detected" else "UNKNOWN")
+        )
+        confidence = float((overall_type or {}).get("confidence", 0.0))
+        record = TrainedModelRecord(
+            model_id="three_stage_deployed",
+            dataset_version_id="success_three_stage",
+            task_type="绫诲瀷璇嗗埆",
+            model_kind="ThreeStage",
+            label_space=["A", "C", "D", "E", "F", "G", "NOISE"],
+            artifact_path="",
+            metrics={},
+            status="璁粌瀹屾垚",
+            created_at=_now_text(),
+        )
+        return PredictionResult(
+            model_record=record,
+            predicted_label=predicted_label,
+            confidence=confidence,
+            probabilities=probabilities,
+        )
+
     bundle = load_trained_model(model_id)
     record = bundle["record"]
     payload = bundle["payload"]
@@ -341,6 +385,83 @@ def predict_type_sample(model_id: str, sample_file_path: str) -> PredictionResul
         confidence=float(confidence),
         probabilities=probabilities,
     )
+
+
+def predict_three_stage_sample(
+    sample_file_path: str,
+    *,
+    input_path_kind: str = "auto",
+    binary_model_path: str | None = None,
+    type_model_path: str | None = None,
+    type_metadata_path: str | None = None,
+    individual_model_path: str | None = None,
+    individual_metadata_path: str | None = None,
+    device: str | None = None,
+    extractor_mode: str | None = None,
+    min_bw_mhz: float | None = None,
+    max_bw_mhz: float | None = None,
+    drone_threshold: float | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    prefer_legacy_direct_path: bool = True,
+) -> dict[str, Any]:
+    """Run the deployed three-stage detector/classifier on a MAT file or IQ sample."""
+
+    path = Path(sample_file_path)
+    if input_path_kind == "mat" and path.suffix.lower() != ".mat":
+        raise ModelServiceError("三阶段部署入口要求 .mat 原始文件。")
+    if input_path_kind == "npy" and path.suffix.lower() != ".npy":
+        raise ModelServiceError("三阶段部署入口要求 .npy IQ 样本文件。")
+
+    try:
+        if any(
+            value is not None
+            for value in (
+                binary_model_path,
+                type_model_path,
+                type_metadata_path,
+                individual_model_path,
+                individual_metadata_path,
+                device,
+                extractor_mode,
+                min_bw_mhz,
+                max_bw_mhz,
+                drone_threshold,
+            )
+        ):
+            config = build_three_stage_config(
+                str(path),
+                binary_model_path=binary_model_path,
+                type_model_path=type_model_path,
+                type_metadata_path=type_metadata_path,
+                individual_model_path=individual_model_path,
+                individual_metadata_path=individual_metadata_path,
+                device=device,
+                extractor_mode=extractor_mode,
+                min_bw_mhz=min_bw_mhz,
+                max_bw_mhz=max_bw_mhz,
+                drone_threshold=drone_threshold,
+            )
+        else:
+            runtime_selection = get_three_stage_runtime_selection()
+            config = build_three_stage_config(
+                str(path),
+                binary_model_path=runtime_selection.binary_model_path,
+                type_model_path=runtime_selection.type_model_path,
+                type_metadata_path=runtime_selection.type_metadata_path or None,
+                individual_model_path=runtime_selection.individual_model_path,
+                individual_metadata_path=runtime_selection.individual_metadata_path or None,
+                device=runtime_selection.device,
+                extractor_mode=runtime_selection.extractor_mode,
+            )
+        if (
+            progress_callback is not None
+            and not prefer_legacy_direct_path
+            and path.suffix.lower() in {".mat", ".npy"}
+        ):
+            return run_three_stage_inference_streaming(config, progress_callback=progress_callback)
+        return run_three_stage_inference(config)
+    except ThreeStageServiceError as exc:
+        raise ModelServiceError(str(exc)) from exc
 
 
 def _emit_train_progress(

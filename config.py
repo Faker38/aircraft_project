@@ -13,6 +13,7 @@ DB_DIR: Path = BASE_DIR / "db"
 DATA_DIR: Path = BASE_DIR / "data"
 RAW_DATA_DIR: Path = DATA_DIR / "raw"
 SAMPLES_DIR: Path = DATA_DIR / "samples"
+MANUAL_MAT_IMPORT_DIR: Path = SAMPLES_DIR / "manual_mat"
 FEATURES_DIR: Path = DATA_DIR / "features"
 DATASETS_DIR: Path = DATA_DIR / "datasets"
 MODELS_DIR: Path = DATA_DIR / "models"
@@ -21,9 +22,18 @@ EXPORTS_DIR: Path = DATA_DIR / "exports"
 RESOURCES_DIR: Path = BASE_DIR / "resources"
 ICONS_DIR: Path = RESOURCES_DIR / "icons"
 PREPROCESS_MODELS_DIR: Path = BASE_DIR / "models"
+THREE_STAGE_ARTIFACTS_DIR: Path = BASE_DIR.parent / "success_three_stage"
 
 # 预处理算法默认模型路径。更换模型时，将 .pth 放入 /models 后修改这里即可。
 PREPROCESS_MODEL_PATH: Path = PREPROCESS_MODELS_DIR / "best_model_1_detect_v2.pth"
+THREE_STAGE_BINARY_MODEL_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "twin_classify_model.pth"
+THREE_STAGE_TYPE_MODEL_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "type_best_model.pth"
+THREE_STAGE_TYPE_META_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "type_best_model.meta.json"
+THREE_STAGE_INDIVIDUAL_MODEL_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "individual_legacy_best_model.pth"
+THREE_STAGE_INDIVIDUAL_META_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "individual_best_model.meta.json"
+THREE_STAGE_SCRIPT_PATH: Path = THREE_STAGE_ARTIFACTS_DIR / "legacy_three_stage_inference.py"
+THREE_STAGE_DEVICE: str = "auto"
+THREE_STAGE_EXTRACTOR_MODE: str = "batch_compatible"
 
 DEFAULT_DEVICE_IP: str = "192.168.1.100"
 DEFAULT_DEVICE_PORT: int = 5025
@@ -45,6 +55,7 @@ def ensure_project_dirs() -> None:
         DB_DIR,
         RAW_DATA_DIR,
         SAMPLES_DIR,
+        MANUAL_MAT_IMPORT_DIR,
         FEATURES_DIR,
         DATASETS_DIR,
         MODELS_DIR,
