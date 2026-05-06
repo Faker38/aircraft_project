@@ -1,0 +1,5 @@
+# Require Faker38 review for repository changes.
+* @Faker38
+
+# Keep ownership of the ownership rules explicit.
+/.github/CODEOWNERS @Faker38
