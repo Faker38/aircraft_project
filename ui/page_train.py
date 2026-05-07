@@ -9,6 +9,7 @@ import shutil
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -69,7 +70,7 @@ class TrainPage(QWidget):
         self._eval_thread: QThread | None = None
         self._eval_worker: ModelEvalWorker | None = None
         self._stop_requested = False
-        self._last_auto_model_name = "rf_type_demo"
+        self._last_auto_model_name = "rf_type_model"
         self._model_name_user_edited = False
 
         root_layout = QVBoxLayout(self)
@@ -88,7 +89,7 @@ class TrainPage(QWidget):
         self.val_accuracy_metric = MetricCard("验证精度", "-", compact=True)
         self.accuracy_metric = MetricCard("测试精度", "-", accent_color="#7CB98B", compact=True)
         self.f1_metric = MetricCard("宏平均 F1", "-", accent_color="#C59A63", compact=True)
-        self.export_metric = MetricCard("当前产物", "未生成", accent_color="#6CA5D9", compact=True)
+        self.export_metric = MetricCard("模型产物", "未生成", accent_color="#6CA5D9", compact=True)
         metrics_row.addWidget(self.val_accuracy_metric)
         metrics_row.addWidget(self.accuracy_metric)
         metrics_row.addWidget(self.f1_metric)
@@ -102,7 +103,9 @@ class TrainPage(QWidget):
         lower_row.addWidget(self._build_results_card(), 3)
         lower_row.addWidget(self._build_export_workspace(), 2)
         content_layout.addLayout(lower_row)
-        content_layout.addWidget(self._build_model_test_card())
+        self.model_test_card = self._build_model_test_card()
+        self.model_test_card.setVisible(False)
+        content_layout.addWidget(self.model_test_card)
         content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -115,10 +118,10 @@ class TrainPage(QWidget):
         """Create the training-page visual banner."""
 
         return VisualHeroCard(
-            "模型训练 · 可复现实验",
-            "当前以 RandomForest 类型识别训练为主，强调版本固定、参数透明和结果可复现；训练页同时提供批量模型测试入口。",
+            "模型训练",
+            "",
             background_name="train_header_bg.svg",
-            chips=["RandomForest", "可复现实验", "批量模型测试"],
+            chips=[],
             ornament_name="decor_data_panel_b.svg",
             height=170,
         )
@@ -156,7 +159,7 @@ class TrainPage(QWidget):
             self.dataset_box.setCurrentIndex(target_index)
             self._on_dataset_changed()
         else:
-            self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
+            self.training_log.setPlainText("没有可用的数据集。")
 
         self._refresh_trained_model_list_from_database()
 
@@ -166,7 +169,7 @@ class TrainPage(QWidget):
         self.training_status_badge = StatusBadge("待启动", "info", size="sm")
         section = SectionCard(
             "训练配置",
-            "当前以类型识别真实训练为主；个体指纹识别保留入口，真实训练服务待接入。",
+            "",
             right_widget=self.training_status_badge,
             compact=True,
         )
@@ -174,7 +177,7 @@ class TrainPage(QWidget):
         switch_row = QHBoxLayout()
         switch_row.setSpacing(12)
         self.task_type_box = QComboBox()
-        self.task_type_box.addItems(["类型识别（真实训练）", "个体识别（保留功能，待接入）"])
+        self.task_type_box.addItems(["类型识别", "个体识别"])
         self.task_type_box.currentIndexChanged.connect(self._switch_config_mode)
 
         self.dataset_box = QComboBox()
@@ -200,9 +203,10 @@ class TrainPage(QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._request_stop_training)
 
-        stop_hint = QLabel("训练中可请求停止；若已进入随机森林拟合，需等待当前阶段结束。")
+        stop_hint = QLabel("")
         stop_hint.setObjectName("MutedText")
         stop_hint.setWordWrap(True)
+        stop_hint.setVisible(False)
 
         validate_button = QPushButton("数据检查")
         validate_button.clicked.connect(self._run_dataset_check)
@@ -227,9 +231,10 @@ class TrainPage(QWidget):
         form_layout.setVerticalSpacing(12)
 
         self.algorithm_box = QComboBox()
-        self.algorithm_box.addItems(["RandomForest"])
+        self.algorithm_box.addItems(["RandomForest", "ThreeStage"])
+        self.algorithm_box.currentIndexChanged.connect(self._sync_algorithm_parameter_state)
 
-        self.model_name_input = QLineEdit("rf_type_demo")
+        self.model_name_input = QLineEdit("rf_type_model")
         self.model_name_input.setPlaceholderText("输入模型名称前缀")
         self.model_name_input.textEdited.connect(self._mark_model_name_edited)
 
@@ -246,42 +251,64 @@ class TrainPage(QWidget):
         self.random_state_spin.setRange(0, 999999999)
         self.random_state_spin.setValue(42)
 
-        tip_label = QLabel(
-            "当前真实训练固定使用 RandomForest。默认随机种子为 42；相同数据集版本、参数与随机种子下，结果稳定重复是预期行为。"
-        )
+        self.learning_rate_spin = QDoubleSpinBox()
+        self.learning_rate_spin.setDecimals(6)
+        self.learning_rate_spin.setRange(0.000001, 1.0)
+        self.learning_rate_spin.setSingleStep(0.0001)
+        self.learning_rate_spin.setValue(0.001)
+
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setRange(1, 4096)
+        self.batch_size_spin.setValue(32)
+
+        self.epochs_spin = QSpinBox()
+        self.epochs_spin.setRange(1, 10000)
+        self.epochs_spin.setValue(100)
+
+        self.optimizer_box = QComboBox()
+        self.optimizer_box.addItems(["Adam", "SGD"])
+
+        tip_label = QLabel("")
         tip_label.setObjectName("MutedText")
         tip_label.setWordWrap(True)
+        tip_label.setVisible(False)
 
         form_layout.addRow("算法", self.algorithm_box)
         form_layout.addRow("模型名称", self.model_name_input)
         form_layout.addRow("树数量", self.n_estimators_spin)
         form_layout.addRow("最大深度", self.max_depth_spin)
         form_layout.addRow("随机种子", self.random_state_spin)
+        form_layout.addRow("Learning Rate", self.learning_rate_spin)
+        form_layout.addRow("Batch Size", self.batch_size_spin)
+        form_layout.addRow("Epochs", self.epochs_spin)
+        form_layout.addRow("Optimizer", self.optimizer_box)
         form_layout.addRow("", tip_label)
+        self._sync_algorithm_parameter_state()
         return box
 
     def _build_dl_form(self) -> QGroupBox:
-        """创建个体识别演示提示区。"""
+        """创建个体识别配置区。"""
 
         box = QGroupBox("个体识别配置")
         form_layout = QFormLayout(box)
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
 
-        mode_value = QLabel("待接入")
+        mode_value = QLabel("无可用训练配置")
         mode_value.setObjectName("ValueLabel")
-        hint_label = QLabel("个体指纹识别是保留功能，后续接入真实训练服务；当前不会生成假的个体识别模型。")
+        hint_label = QLabel("")
         hint_label.setObjectName("MutedText")
         hint_label.setWordWrap(True)
+        hint_label.setVisible(False)
 
-        form_layout.addRow("当前状态", mode_value)
+        form_layout.addRow("训练配置", mode_value)
         form_layout.addRow("", hint_label)
         return box
 
     def _build_results_card(self) -> SectionCard:
         """创建训练结果展示区。"""
 
-        section = SectionCard("训练结果", "显示真实训练摘要、关键指标、混淆矩阵和类别指标。", compact=True)
+        section = SectionCard("训练结果", "", compact=True)
 
         result_metric_row = QHBoxLayout()
         result_metric_row.setSpacing(10)
@@ -297,8 +324,7 @@ class TrainPage(QWidget):
         self.confusion_placeholder = QPlainTextEdit()
         self.confusion_placeholder.setReadOnly(True)
         self.confusion_placeholder.setPlainText(
-            "训练摘要显示区\n\n"
-            "当前尚未执行真实训练。完成训练后，这里会展示模型编号、版本、参数和产物路径。"
+            "等待训练任务启动。"
         )
         self.confusion_placeholder.setMinimumHeight(150)
         configure_scrollable(self.confusion_placeholder)
@@ -313,8 +339,7 @@ class TrainPage(QWidget):
         self.training_log = QPlainTextEdit()
         self.training_log.setReadOnly(True)
         self.training_log.setPlainText(
-            "等待训练任务启动。\n"
-            "当前页面会直接消费数据集管理页生成的数据集版本与 manifest。"
+            "等待训练任务启动。"
         )
         self.training_log.setMinimumHeight(170)
         configure_scrollable(self.training_log)
@@ -356,7 +381,7 @@ class TrainPage(QWidget):
         self.export_status_badge = StatusBadge("待生成", "info", size="sm")
         section = SectionCard(
             "模型产物",
-            "训练完成后，真实模型会落盘为 joblib，并登记到本地数据库供识别页直接读取。",
+            "",
             right_widget=self.export_status_badge,
             compact=True,
         )
@@ -393,12 +418,13 @@ class TrainPage(QWidget):
 
         self.export_path_input = QLineEdit(str(EXPORTS_DIR))
         self.format_box = QComboBox()
-        self.format_box.addItems(["原始模型（joblib）", "ONNX（待扩展）"])
+        self.format_box.addItems(["joblib"])
         self.format_box.setEnabled(False)
 
-        note_label = QLabel("当前真实导出产物固定为 model.joblib + metadata.json；ONNX 是保留目标，待扩展后再开放选择。")
+        note_label = QLabel("")
         note_label.setObjectName("MutedText")
         note_label.setWordWrap(True)
+        note_label.setVisible(False)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
@@ -419,12 +445,12 @@ class TrainPage(QWidget):
     def _build_export_result_card(self) -> SectionCard:
         """创建产物文件展示区。"""
 
-        section = SectionCard("产物清单", "显示当前模型目录下的真实文件。", compact=True)
+        section = SectionCard("产物清单", "", compact=True)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(10)
         self.export_summary_badge = StatusBadge("待生成", "info", size="sm")
-        self.export_summary_label = QLabel("尚未生成真实模型文件。")
+        self.export_summary_label = QLabel("尚未生成模型文件。")
         self.export_summary_label.setObjectName("MutedText")
         self.export_summary_label.setWordWrap(True)
         status_row.addWidget(self.export_summary_badge)
@@ -439,8 +465,8 @@ class TrainPage(QWidget):
 
         section.body_layout.addWidget(
             VisualInfoStrip(
-                "当前模型库",
-                "真实训练完成后会生成 model.joblib 与 metadata.json。即使没有选中模型，也可以通过上方模型列表切换查看当前成果物。",
+                "模型库",
+                "",
                 illustration_name="empty_no_model.svg",
                 ornament_name="decor_data_panel_b.svg",
             )
@@ -455,7 +481,7 @@ class TrainPage(QWidget):
         self.eval_status_badge = StatusBadge("待测试", "info", size="sm")
         section = SectionCard(
             "模型测试",
-            "导入外部带标签测试集 CSV，对当前类型识别模型执行批量评估。",
+            "",
             right_widget=self.eval_status_badge,
             compact=True,
         )
@@ -469,8 +495,8 @@ class TrainPage(QWidget):
         csv_row = QHBoxLayout()
         csv_row.setSpacing(10)
         self.eval_manifest_input = QLineEdit()
-        self.eval_manifest_input.setPlaceholderText("选择带标签测试集 CSV（sample_id,sample_file_path,label_type）")
-        browse_button = QPushButton("选择 CSV")
+        self.eval_manifest_input.setPlaceholderText("选择测试数据集")
+        browse_button = QPushButton("选择数据集")
         browse_button.clicked.connect(self._choose_evaluation_manifest)
         csv_row.addWidget(self.eval_manifest_input, 1)
         csv_row.addWidget(browse_button)
@@ -487,12 +513,13 @@ class TrainPage(QWidget):
         action_row.addWidget(self.eval_start_button)
         action_row.addStretch(1)
 
-        hint_label = QLabel("CSV 固定字段：sample_id、sample_file_path、label_type。样本文件格式固定为当前训练链路使用的 .npy IQ 样本。")
+        hint_label = QLabel("")
         hint_label.setObjectName("MutedText")
         hint_label.setWordWrap(True)
+        hint_label.setVisible(False)
 
         control_layout.addRow("测试模型", self.eval_model_box)
-        control_layout.addRow("测试清单", csv_row)
+        control_layout.addRow("测试数据集", csv_row)
 
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
@@ -507,13 +534,13 @@ class TrainPage(QWidget):
 
         self.eval_log = QPlainTextEdit()
         self.eval_log.setReadOnly(True)
-        self.eval_log.setPlainText("当前还没有执行批量模型测试。")
+        self.eval_log.setPlainText("")
         self.eval_log.setMinimumHeight(180)
         configure_scrollable(self.eval_log)
 
         self.eval_confusion_output = QPlainTextEdit()
         self.eval_confusion_output.setReadOnly(True)
-        self.eval_confusion_output.setPlainText("测试完成后，这里会显示混淆矩阵与报告输出路径。")
+        self.eval_confusion_output.setPlainText("")
         self.eval_confusion_output.setMinimumHeight(180)
         configure_scrollable(self.eval_confusion_output)
 
@@ -545,14 +572,18 @@ class TrainPage(QWidget):
             return
 
         if self.task_type_box.currentIndex() != 0:
-            self.training_status_badge.set_status("待接入", "warning", size="sm")
-            self.training_log.setPlainText("个体指纹识别训练入口已保留，真实训练服务待接入；本轮请切回“类型识别（真实训练）”。")
+            self.training_status_badge.set_status("无配置", "warning", size="sm")
+            self.training_log.setPlainText("无可用训练配置。")
+            return
+        if self.algorithm_box.currentText() != "RandomForest":
+            self.training_status_badge.set_status("无配置", "warning", size="sm")
+            self.training_log.setPlainText("该模型技术尚未配置训练入口。")
             return
 
         detail = self._current_dataset_detail()
         if detail is None:
             self.training_status_badge.set_status("无数据集", "danger", size="sm")
-            self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
+            self.training_log.setPlainText("没有可用的数据集。")
             return
 
         error_message = self._validate_training_ready(detail)
@@ -594,13 +625,12 @@ class TrainPage(QWidget):
         thread.start()
 
     def _choose_evaluation_manifest(self) -> None:
-        """选择一个外部测试集 CSV 清单。"""
+        """选择一个外部测试集目录。"""
 
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_path = QFileDialog.getExistingDirectory(
             self,
-            "选择模型测试清单",
+            "选择测试数据集",
             str(Path.cwd()),
-            "CSV 文件 (*.csv)",
         )
         if file_path:
             self.eval_manifest_input.setText(file_path)
@@ -620,7 +650,7 @@ class TrainPage(QWidget):
         manifest_csv_path = self.eval_manifest_input.text().strip()
         if not manifest_csv_path:
             self.eval_status_badge.set_status("待清单", "warning", size="sm")
-            self.eval_log.setPlainText("请先选择外部测试集 CSV 清单。")
+            self.eval_log.setPlainText("请先选择测试数据集。")
             return
 
         thread = QThread(self)
@@ -652,10 +682,10 @@ class TrainPage(QWidget):
         self._train_worker.request_cancel()
         self.stop_button.setEnabled(False)
         self.training_status_badge.set_status("停止中", "warning", size="sm")
-        self._append_training_log("已接收停止请求。若当前已进入随机森林拟合阶段，需等待该阶段结束后停止。")
+        self._append_training_log("已接收停止请求。")
         self.confusion_placeholder.setPlainText(
             "停止请求已接收。\n\n"
-            "当前训练采用单次拟合方式；如果已经进入随机森林拟合阶段，无法瞬时强停，系统会在当前阶段结束后丢弃本次结果，不写入模型。"
+            "本次训练已请求停止。"
         )
         self.confusion_table.setRowCount(0)
         self.confusion_table.setColumnCount(0)
@@ -668,14 +698,13 @@ class TrainPage(QWidget):
             "\n".join(
                 [
                     f"开始训练类型识别模型 | 数据集版本 {version_id}",
-                    "当前训练属于传统机器学习的单次拟合过程，不是按 epoch 连续刷新的深度学习训练。",
-                    f"当前参数：trees={self.n_estimators_spin.value()} / max_depth={self._format_depth_text(self.max_depth_spin.value())} / seed={self.random_state_spin.value()}",
+                    f"参数：trees={self.n_estimators_spin.value()} / max_depth={self._format_depth_text(self.max_depth_spin.value())} / seed={self.random_state_spin.value()}",
                 ]
             )
         )
         self.confusion_placeholder.setPlainText(
             "训练进行中，请稍候...\n\n"
-            "当前会按阶段执行：读取版本 -> 统计划分 -> 提取特征 -> 训练随机森林 -> 评估结果 -> 写入模型。"
+            "训练进行中。"
         )
         self.result_val_metric.set_value("-")
         self.result_test_metric.set_value("-")
@@ -692,10 +721,9 @@ class TrainPage(QWidget):
         self.confusion_placeholder.setPlainText(
             "\n".join(
                 [
-                    f"当前阶段：{stage_text}",
+                    f"阶段：{stage_text}",
                     "",
-                    "当前训练属于单次拟合过程，不会像 epoch 式训练那样连续刷新 loss 曲线。",
-                    "相同数据集版本、参数与随机种子下，结果稳定重复是预期行为。",
+                    "训练进行中。",
                 ]
             )
         )
@@ -736,17 +764,17 @@ class TrainPage(QWidget):
         self.training_log.appendPlainText(message)
         self.confusion_placeholder.setPlainText(
             "本次训练已停止。\n\n"
-            "当前请求已在安全检查点生效，本次不会生成新的模型记录，也不会写入新的模型产物。"
+            "本次训练已停止。"
         )
         self.confusion_table.setRowCount(0)
         self.confusion_table.setColumnCount(0)
         self._refresh_trained_model_list_from_database()
         if self.trained_models:
-            self.export_summary_label.setText("本次训练已停止，未生成新模型；当前已有模型记录保持不变。")
+            self.export_summary_label.setText("本次训练已停止，未生成新模型。")
         else:
             self.export_metric.set_value("未生成")
             self.export_summary_badge.set_status("待模型", "info", size="sm")
-            self.export_summary_label.setText("本次训练已停止，且当前没有可用模型记录。")
+            self.export_summary_label.setText("本次训练已停止。")
 
     def _on_train_failed(self, message: str) -> None:
         """渲染训练失败结果。"""
@@ -773,13 +801,13 @@ class TrainPage(QWidget):
             "\n".join(
                 [
                     f"开始测试类型识别模型 | 模型 {model_id}",
-                    f"测试清单：{self.eval_manifest_input.text().strip()}",
+                    f"测试数据集：{self.eval_manifest_input.text().strip()}",
                 ]
             )
         )
         self.eval_confusion_output.setPlainText(
             "模型测试执行中。\n\n"
-            "当前会逐条读取外部带标签测试样本，复用真实特征提取与真实模型推理能力完成批量评估。"
+            "模型测试执行中。"
         )
 
     def _on_eval_progress(self, percent: int, stage_text: str, log_text: str) -> None:
@@ -812,14 +840,14 @@ class TrainPage(QWidget):
         self._set_eval_running_state(False)
         self.eval_status_badge.set_status("测试失败", "danger", size="sm")
         self.eval_log.setPlainText(message)
-        self.eval_confusion_output.setPlainText("模型测试未完成，请先修正外部测试清单或模型状态后重试。")
+        self.eval_confusion_output.setPlainText("模型测试未完成。")
 
     def _run_dataset_check(self) -> None:
         """执行训练前的数据集检查。"""
 
         detail = self._current_dataset_detail()
         if detail is None:
-            self.training_log.setPlainText("当前没有可用的数据集版本，请先在数据集管理页生成版本。")
+            self.training_log.setPlainText("没有可用的数据集。")
             return
 
         record = detail.version
@@ -834,8 +862,21 @@ class TrainPage(QWidget):
             f"[Check] 划分数量：train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
             f"[Check] 标签数：{len(label_counts)}",
             f"[Check] 标签分布：{label_summary or '-'}",
-            f"[Check] 当前训练参数：trees={self.n_estimators_spin.value()} / max_depth={self._format_depth_text(self.max_depth_spin.value())} / seed={self.random_state_spin.value()}",
         ]
+        if self.algorithm_box.currentText() == "ThreeStage":
+            lines.append(
+                "[Check] 训练参数："
+                f"learning_rate={self.learning_rate_spin.value():.6f} / "
+                f"batch_size={self.batch_size_spin.value()} / "
+                f"epochs={self.epochs_spin.value()} / "
+                f"optimizer={self.optimizer_box.currentText()}"
+            )
+        else:
+            lines.append(
+                f"[Check] 训练参数：trees={self.n_estimators_spin.value()} / "
+                f"max_depth={self._format_depth_text(self.max_depth_spin.value())} / "
+                f"seed={self.random_state_spin.value()}"
+            )
 
         if detail.missing_file_count:
             lines.append(f"[Warn] 有 {detail.missing_file_count} 个样本文件不存在。")
@@ -851,7 +892,7 @@ class TrainPage(QWidget):
         if error_message:
             lines.append(f"[Warn] {error_message}")
         else:
-            lines.append("[OK] 当前数据集已满足类型识别真实训练条件。")
+            lines.append("[OK] 数据集已满足类型识别训练条件。")
 
         self.training_log.setPlainText("\n".join(lines))
 
@@ -872,7 +913,7 @@ class TrainPage(QWidget):
             f"特征维度：{result.feature_count}",
             f"测试精度：{accuracy_text} | 宏平均 F1：{f1_text}",
             f"训练参数：trees={record.n_estimators_text} / max_depth={record.max_depth_text} / seed={record.random_state_text}",
-            f"说明：当前结果来自固定版本 {record.dataset_version_id} 的一次可复现实验。",
+            f"说明：结果来自固定版本 {record.dataset_version_id}。",
             "",
             "标签分布：",
             *label_lines,
@@ -882,7 +923,7 @@ class TrainPage(QWidget):
             [
                 "",
                 f"模型文件：{record.artifact_path}",
-                "当前生成的是 demo 可直接加载的真实模型文件，可继续在识别页完成本地验证。",
+                "模型可用于识别页。",
             ]
         )
         return "\n".join(summary_lines)
@@ -893,7 +934,7 @@ class TrainPage(QWidget):
         summary_lines = [
             f"测试模型：{result.model_record.model_id}",
             f"来源版本：{result.model_record.dataset_version_id}",
-            f"测试清单：{result.manifest_csv_path}",
+            f"测试数据集：{result.manifest_csv_path}",
             f"测试样本数：{result.sample_count}",
             f"正确率：{result.accuracy * 100:.2f}%",
             f"宏平均 F1：{result.macro_f1:.4f}",
@@ -905,7 +946,7 @@ class TrainPage(QWidget):
 
         labels = [row.label for row in result.metric_rows]
         if not labels or not result.confusion_matrix:
-            summary_lines.append("当前没有可展示的混淆矩阵。")
+            summary_lines.append("没有可展示的混淆矩阵。")
             return "\n".join(summary_lines)
 
         header = "True\\Pred".ljust(18)
@@ -1037,7 +1078,7 @@ class TrainPage(QWidget):
             self.export_result_table.setRowCount(0)
             self.export_status_badge.set_status("待模型", "info", size="sm")
             self.export_summary_badge.set_status("待模型", "info", size="sm")
-            self.export_summary_label.setText("当前没有可用模型记录，请先完成一次真实训练。")
+            self.export_summary_label.setText("没有可用模型。")
             self.export_metric.set_value("未生成")
             self.delete_model_button.setEnabled(False)
             return
@@ -1062,7 +1103,7 @@ class TrainPage(QWidget):
             self.export_summary_badge.set_status("可识别", "success", size="sm")
             if version_exists:
                 self.export_summary_label.setText(
-                    f"模型 {record.model_id} 已就绪，可直接用于类型识别页面；当前真实产物为 joblib。"
+                    f"模型 {record.model_id} 已就绪。"
                 )
             else:
                 self.export_summary_label.setText(
@@ -1139,7 +1180,7 @@ class TrainPage(QWidget):
         self.export_metric.set_value("未生成" if not self.trained_models else "joblib")
         if not self.trained_models:
             self.training_status_badge.set_status("待模型", "info", size="sm")
-            self.training_log.setPlainText("当前没有可用模型记录，请先执行训练生成真实模型。")
+            self.training_log.setPlainText("没有可用模型。")
         local_text = "本地模型目录已删除" if delete_local_files else "本地模型文件未删除"
         self.export_summary_label.setText(
             f"已删除模型记录：{record.model_id}。{local_text}。"
@@ -1196,13 +1237,13 @@ class TrainPage(QWidget):
         self.training_log.setPlainText(
             "\n".join(
                 [
-                    f"当前数据集：{detail.version.version_id}",
+                    f"数据集：{detail.version.version_id}",
                     f"任务类型：{detail.version.task_type}",
                     f"样本清单：{len(detail.items)} 条",
                     f"标签数：{len(label_counts)}",
                     f"数据划分：train={split_counts.get('train', 0)} / val={split_counts.get('val', 0)} / test={split_counts.get('test', 0)}",
                     f"Manifest：{detail.manifest_path}",
-                    "点击“数据检查”可执行完整检查。满足条件后即可开始真实训练。",
+                    "点击“数据检查”可执行完整检查。",
                 ]
             )
         )
@@ -1219,22 +1260,22 @@ class TrainPage(QWidget):
         """检查当前数据集是否满足真实训练条件。"""
 
         if detail.version.task_type != "类型识别":
-            return "当前只支持类型识别真实训练，请选择“类型识别”数据集版本。"
+            return "请选择类型识别数据集。"
         if not detail.items:
-            return "当前数据集版本没有样本清单。"
+            return "数据集没有样本清单。"
         if detail.missing_file_count:
-            return f"当前版本有 {detail.missing_file_count} 个样本文件不存在。"
+            return f"有 {detail.missing_file_count} 个样本文件不存在。"
         if detail.empty_label_count:
-            return f"当前版本有 {detail.empty_label_count} 条样本标签为空。"
+            return f"有 {detail.empty_label_count} 条样本标签为空。"
 
         label_counts = self._actual_label_counts(detail)
         if len(label_counts) < 2:
-            return "至少需要两类类型标签，当前数据集还不能执行真实训练。"
+            return "至少需要两类类型标签。"
 
         split_counts = self._split_counts(detail)
         for split_name in ("train", "val", "test"):
             if split_counts.get(split_name, 0) <= 0:
-                return f"当前版本缺少 {split_name} 集样本，请先调整数据集划分。"
+                return f"缺少 {split_name} 集样本。"
         return ""
 
     def _split_counts(self, detail: DatasetVersionDetail) -> dict[str, int]:
@@ -1256,8 +1297,22 @@ class TrainPage(QWidget):
 
         self.config_stack.setCurrentIndex(index)
         if index == 1:
-            self.training_status_badge.set_status("待接入", "warning", size="sm")
+            self.training_status_badge.set_status("无配置", "warning", size="sm")
         elif not self._is_running():
+            self.training_status_badge.set_status("待启动", "info", size="sm")
+
+    def _sync_algorithm_parameter_state(self) -> None:
+        """根据模型技术切换参数可用状态。"""
+
+        is_three_stage = hasattr(self, "algorithm_box") and self.algorithm_box.currentText() == "ThreeStage"
+        running = self._is_running() if hasattr(self, "_train_thread") else False
+        for widget in (self.n_estimators_spin, self.max_depth_spin, self.random_state_spin):
+            widget.setEnabled((not running) and not is_three_stage)
+        for widget in (self.learning_rate_spin, self.batch_size_spin, self.epochs_spin, self.optimizer_box):
+            widget.setEnabled((not running) and is_three_stage)
+        if is_three_stage and not running:
+            self.training_status_badge.set_status("无配置", "warning", size="sm")
+        elif not running and self.task_type_box.currentIndex() == 0:
             self.training_status_badge.set_status("待启动", "info", size="sm")
 
     def _mark_model_name_edited(self) -> None:
@@ -1270,10 +1325,9 @@ class TrainPage(QWidget):
 
         self.dataset_box.setEnabled(not running)
         self.task_type_box.setEnabled(not running)
+        self.algorithm_box.setEnabled(not running)
         self.model_name_input.setEnabled(not running)
-        self.n_estimators_spin.setEnabled(not running)
-        self.max_depth_spin.setEnabled(not running)
-        self.random_state_spin.setEnabled(not running)
+        self._sync_algorithm_parameter_state()
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running and not self._stop_requested)
         self.eval_model_box.setEnabled(not running and self._eval_thread is None)

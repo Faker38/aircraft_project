@@ -1,4 +1,4 @@
-"""USRP IQ demo preprocessing.
+"""USRP IQ preprocessing.
 
 This module bridges UHD ``rx_samples_to_file`` output into the existing
 dataset/training/recognition workflow without changing the CAP algorithm path.
@@ -23,7 +23,7 @@ from services.workflow_records import SampleRecord
 DEFAULT_USRP_DEMO_SLICE_LENGTH = 8192
 DEFAULT_USRP_DEMO_MAX_SEGMENTS = 120
 USRP_DEMO_SOURCE_TYPE = "usrp_preprocess"
-USRP_DEMO_SOURCE_NAME = "USRP 预处理输出"
+USRP_DEMO_SOURCE_NAME = "IQ 预处理输出"
 
 FREQUENCY_LABELS_MHZ: dict[int, str] = {
     2412: "频点A",
@@ -33,7 +33,7 @@ FREQUENCY_LABELS_MHZ: dict[int, str] = {
 
 
 class USRPDemoPreprocessError(RuntimeError):
-    """Raised when USRP demo preprocessing cannot continue safely."""
+    """Raised when USRP preprocessing cannot continue safely."""
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class USRPDemoPreprocessInfo:
 
 @dataclass(frozen=True)
 class USRPDemoPreprocessConfig:
-    """Configuration for converting one USRP IQ capture into demo samples."""
+    """Configuration for converting one USRP IQ capture into samples."""
 
     input_file_path: str
     slice_length: int
@@ -69,7 +69,7 @@ class USRPDemoPreprocessConfig:
 
 @dataclass(frozen=True)
 class USRPDemoPreprocessResult:
-    """USRP demo preprocessing result consumed by the Qt page."""
+    """USRP preprocessing result consumed by the Qt page."""
 
     success: bool
     message: str
@@ -84,9 +84,9 @@ class USRPDemoPreprocessResult:
 
 
 def default_usrp_demo_output_dir() -> Path:
-    """Return the default output directory for USRP demo samples."""
+    """Return the default output directory for USRP IQ samples."""
 
-    return SAMPLES_DIR / "usrp_demo_output"
+    return SAMPLES_DIR / "usrp_iq_output"
 
 
 def list_usrp_iq_captures(raw_dir: Path | None = None) -> list[Path]:
@@ -107,7 +107,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
     iq_path = Path(path)
     if iq_path.suffix.lower() != ".iq":
-        raise USRPDemoPreprocessError("USRP 演示预处理仅支持 .iq 文件。")
+        raise USRPDemoPreprocessError("IQ 预处理仅支持 .iq 文件。")
     if not iq_path.exists():
         raise USRPDemoPreprocessError("USRP IQ 文件不存在。")
     if iq_path.stat().st_size <= 0 or iq_path.stat().st_size % 4 != 0:
@@ -115,7 +115,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
     metadata_path = iq_path.with_suffix(".json")
     if not metadata_path.exists():
-        raise USRPDemoPreprocessError("未找到同名 .json 元数据文件，无法进入演示预处理。")
+        raise USRPDemoPreprocessError("未找到同名 .json 元数据文件。")
 
     metadata = _read_metadata(metadata_path)
     iq_pair_count = iq_path.stat().st_size // 4
@@ -151,7 +151,7 @@ def preview_usrp_iq_file(path: str | Path) -> USRPDemoPreprocessInfo:
 
 
 def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPreprocessResult:
-    """Convert a UHD IQ capture into labeled demo samples for downstream pages."""
+    """Convert a UHD IQ capture into labeled samples for downstream pages."""
 
     input_info = preview_usrp_iq_file(config.input_file_path)
     slice_length = max(1024, int(config.slice_length))
@@ -165,7 +165,7 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
     iq_pairs = raw.reshape(-1, 2)
     window_count = int(iq_pairs.shape[0] // slice_length)
     if window_count <= 0:
-        raise USRPDemoPreprocessError("USRP IQ 文件长度不足，无法按当前切片长度生成样本。")
+        raise USRPDemoPreprocessError("USRP IQ 文件长度不足，无法按设定切片长度生成样本。")
 
     window_stats = _score_windows(iq_pairs, window_count, slice_length)
     power_values = np.asarray([item["power_db"] for item in window_stats], dtype=np.float64)
@@ -239,15 +239,15 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
         )
 
     logs = [
-        f"[Start] USRP IQ 演示预处理：{input_info.path.name}",
+        f"[Start] IQ 预处理：{input_info.path.name}",
         f"[Info] 采样率 {input_info.sample_rate_hz / 1_000_000:.3f} MHz，中心频率 {input_info.center_frequency_hz / 1_000_000:.3f} MHz。",
         f"[Info] 切片长度 {slice_length}，候选窗口 {window_count}，能量阈值 {threshold_db:.2f} dB。",
-        f"[Info] 演示标签建议：{label}。本标签仅表示现场频点类别，不代表无人机型号。",
-        f"[Done] 已保存 {len(records)} 条 USRP 演示样本：{output_dir}",
+        f"[Info] 标签建议：{label}。",
+        f"[Done] 已保存 {len(records)} 条 IQ 样本：{output_dir}",
     ]
     return USRPDemoPreprocessResult(
         success=bool(records),
-        message=f"USRP IQ 演示预处理完成，已生成 {len(records)} 条样本。",
+        message=f"IQ 预处理完成，已生成 {len(records)} 条样本。",
         input_info=input_info,
         detected_segment_count=len(records),
         candidate_segment_count=window_count,
@@ -260,7 +260,7 @@ def run_usrp_demo_preprocess(config: USRPDemoPreprocessConfig) -> USRPDemoPrepro
 
 
 def suggest_usrp_demo_label(center_frequency_hz: float) -> str:
-    """Return the demo label for the nearest configured Wi-Fi frequency."""
+    """Return the label for the nearest configured frequency."""
 
     mhz = int(round(float(center_frequency_hz) / 1_000_000))
     nearest = min(FREQUENCY_LABELS_MHZ, key=lambda value: abs(value - mhz))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -64,6 +64,7 @@ class PreprocessPage(QWidget):
         """初始化预处理页面。"""
 
         super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.cap_records = self._build_input_records(usrp_mode=False)
         self.current_probe_result: CapProbeResult | None = None
         self.current_usrp_info: USRPDemoPreprocessInfo | None = None
@@ -75,7 +76,7 @@ class PreprocessPage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = SmoothScrollArea()
+        self.scroll_area = SmoothScrollArea()
 
         container = QWidget()
         content_layout = QVBoxLayout(container)
@@ -106,8 +107,8 @@ class PreprocessPage(QWidget):
         content_layout.addWidget(self._build_result_card())
         content_layout.addStretch(1)
 
-        scroll_area.setWidget(container)
-        root_layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(container)
+        root_layout.addWidget(self.scroll_area)
 
         self._sync_mode_text()
         self.file_metric.set_value(str(len(self.cap_records)))
@@ -116,7 +117,26 @@ class PreprocessPage(QWidget):
             self._update_file_selection_state()
             self._load_selected_cap_preview()
         else:
-            self._reset_preview("当前未发现可用 CAP 文件。", badge_level="warning")
+            self._reset_preview("未发现可用 CAP 文件。", badge_level="warning")
+
+    def _current_page_scroll(self) -> int:
+        """返回预处理页外层滚动条当前位置。"""
+
+        return int(self.scroll_area.verticalScrollBar().value())
+
+    def _preserve_page_scroll(self, position: int) -> None:
+        """在当前事件处理结束后，把预处理页外层滚动条恢复到原位置。"""
+
+        def apply_restore() -> None:
+            scroll_bar = self.scroll_area.verticalScrollBar()
+            target = max(scroll_bar.minimum(), min(scroll_bar.maximum(), int(position)))
+            scroll_bar.setValue(target)
+            controller = getattr(self.scroll_area, "_smooth_scroll_controller", None)
+            if controller is not None and hasattr(controller, "_target_value"):
+                controller._target_value = scroll_bar.value()
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+        QTimer.singleShot(0, apply_restore)
 
     def _build_input_records(self, *, usrp_mode: bool | None = None) -> list[dict[str, object]]:
         """根据当前模式扫描可预处理的原始文件。"""
@@ -263,13 +283,13 @@ class PreprocessPage(QWidget):
     def _build_file_card(self) -> SectionCard:
         """创建 CAP 文件选择卡片。"""
 
-        section = SectionCard("原始文件", "支持 CAP 算法预处理和 USRP IQ 演示预处理两条入口。", compact=True)
+        section = SectionCard("原始文件", "", compact=True)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(10)
         mode_row.addWidget(QLabel("输入模式"))
         self.input_mode_box = QComboBox()
-        self.input_mode_box.addItems(["CAP 算法预处理", "USRP IQ 演示预处理"])
+        self.input_mode_box.addItems(["CAP 文件", "IQ 文件"])
         self.input_mode_box.currentIndexChanged.connect(self._on_input_mode_changed)
         mode_row.addWidget(self.input_mode_box)
         mode_row.addStretch(1)
@@ -299,8 +319,7 @@ class PreprocessPage(QWidget):
         self.delete_raw_file_button = QPushButton("删除选中文件")
         self.delete_raw_file_button.setObjectName("DangerButton")
         self.delete_raw_file_button.setToolTip(
-            "用于原始文件列表：可选择只删除数据库记录，或同时删除本地原始文件；"
-            "USRP .iq/.bin 会连同同名 .json 元数据一起处理。"
+            "删除所选原始文件记录，可选择是否同步删除本地文件。"
         )
         self.delete_raw_file_button.clicked.connect(self._delete_selected_raw_file)
         self.delete_raw_file_button.setEnabled(False)
@@ -313,9 +332,10 @@ class PreprocessPage(QWidget):
         action_row.addWidget(self.file_status_badge)
         action_row.addStretch(1)
 
-        self.file_status_label = QLabel("当前会自动扫描工作区根目录下全部 CAP 文件，并支持先预览头字段，再按同一文件发起预处理运行。")
+        self.file_status_label = QLabel("")
         self.file_status_label.setObjectName("MutedText")
         self.file_status_label.setWordWrap(True)
+        self.file_status_label.setVisible(False)
 
         section.body_layout.addLayout(mode_row)
         section.body_layout.addWidget(self.file_table)
@@ -345,6 +365,7 @@ class PreprocessPage(QWidget):
     def refresh_input_records(self, checked: bool = False, *, usrp_mode: bool | None = None) -> None:
         """重新扫描当前模式或指定模式下的原始文件列表。"""
 
+        scroll_position = self._current_page_scroll()
         del checked
         if usrp_mode is not None and self._is_usrp_demo_mode() != usrp_mode:
             self.input_mode_box.setCurrentIndex(1 if usrp_mode else 0)
@@ -358,9 +379,9 @@ class PreprocessPage(QWidget):
         self.file_metric.set_value(str(len(self.cap_records)))
         self.output_dir_input.setText(str(self._default_output_dir_for_selected_mode()))
         self._reset_preview(
-            "请选择 USRP IQ 文件后读取元数据和 IQ 预览。"
+            "请选择 IQ 文件。"
             if self._is_usrp_demo_mode()
-            else "请选择 CAP 文件后读取头信息。"
+            else "请选择 CAP 文件。"
         )
         self.segment_table.setRowCount(0)
         self.log_output.setPlainText("等待日志输出。")
@@ -372,9 +393,10 @@ class PreprocessPage(QWidget):
             self._load_selected_cap_preview()
         else:
             self._update_file_selection_state()
+        self._preserve_page_scroll(scroll_position)
 
     def _on_input_mode_changed(self) -> None:
-        """Switch between CAP and USRP demo preprocessing input modes."""
+        """Switch between CAP and IQ preprocessing input modes."""
 
         self.refresh_input_records()
 
@@ -382,16 +404,12 @@ class PreprocessPage(QWidget):
         """Refresh user-facing hints for the selected preprocessing mode."""
 
         if self._is_usrp_demo_mode():
-            self.file_status_label.setText("当前扫描 data/raw 下带同名 JSON 的 USRP .iq 文件，用于演示级 IQ 切片。")
-            self.config_status_label.setText(
-                "USRP 演示预处理会把 .iq 切成 complex64 .npy，并按 2412/2437/2462 MHz 自动建议频点标签。"
-            )
-            self.preview_note_label.setText("请选择 USRP IQ 文件后读取元数据和 IQ 预览。")
+            self.file_status_label.clear()
+            self.config_status_label.clear()
+            self.preview_note_label.setText("请选择 IQ 文件。")
             return
-        self.file_status_label.setText("当前会自动扫描工作区根目录下全部 CAP 文件，并支持先预览头字段，再按同一文件发起预处理运行。")
-        self.config_status_label.setText(
-            "当前默认按 0x200 / 512 字节头长试跑；能量阈值按窗口中位能量做相对抬升，默认 +1.0 dB。"
-        )
+        self.file_status_label.clear()
+        self.config_status_label.clear()
 
     def _build_config_card(self) -> SectionCard:
         """创建预处理参数配置卡片。"""
@@ -399,7 +417,7 @@ class PreprocessPage(QWidget):
         self.run_status_badge = StatusBadge("待执行", "info", size="sm")
         section = SectionCard(
             "预处理参数",
-            "解析 CAP 头后自动绑定带宽、采样率和中心频率，用户只配置必要的筛选参数。",
+            "",
             right_widget=self.run_status_badge,
             compact=True,
         )
@@ -462,6 +480,8 @@ class PreprocessPage(QWidget):
 
         self.bandpass_checkbox = QCheckBox("启用带通滤波")
         self.bandpass_checkbox.setChecked(True)
+        self.drone_filter_checkbox = QCheckBox("启用无人机筛选")
+        self.drone_filter_checkbox.setChecked(True)
 
         default_output_dir = default_preprocess_output_dir()
         self.output_dir_input = QLineEdit(str(default_output_dir))
@@ -481,7 +501,14 @@ class PreprocessPage(QWidget):
         form_layout.addRow("最小带宽", self.min_bandwidth_input)
         form_layout.addRow("最小时长", self.min_duration_input)
         form_layout.addRow("置信度阈值", self.confidence_input)
-        form_layout.addRow("滤波选项", self.bandpass_checkbox)
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        filter_row.setSpacing(14)
+        filter_row.addWidget(self.bandpass_checkbox)
+        filter_row.addWidget(self.drone_filter_checkbox)
+        filter_row.addStretch(1)
+
+        form_layout.addRow("滤波选项", filter_row)
         form_layout.addRow("输出目录", self.output_dir_input)
         form_layout.addRow("模型权重", self.model_path_input)
 
@@ -503,11 +530,10 @@ class PreprocessPage(QWidget):
         button_row.addWidget(self.goto_dataset_button)
         button_row.addStretch(1)
 
-        self.config_status_label = QLabel(
-            "当前默认按 0x200 / 512 字节头长试跑；能量阈值按窗口中位能量做相对抬升，默认 +1.0 dB。"
-        )
+        self.config_status_label = QLabel("")
         self.config_status_label.setObjectName("MutedText")
         self.config_status_label.setWordWrap(True)
+        self.config_status_label.setVisible(False)
 
         section.body_layout.addLayout(parsed_layout)
         section.body_layout.addWidget(self.process_progress)
@@ -521,8 +547,8 @@ class PreprocessPage(QWidget):
 
         self.preview_status_badge = StatusBadge("待读取", "info", size="sm")
         section = SectionCard(
-            "CAP 导入预览",
-            "按当前试跑口径展示带宽、实际采样率、中心频率和少量 IQ 预览。",
+            "文件预览",
+            "",
             right_widget=self.preview_status_badge,
             compact=True,
         )
@@ -548,9 +574,10 @@ class PreprocessPage(QWidget):
         info_form.addRow("IQ 起始偏移", self.preview_offset_value)
         info_form.addRow("统计范围", self.preview_scope_value)
 
-        self.preview_note_label = QLabel("请选择 CAP 文件后读取头信息。")
+        self.preview_note_label = QLabel("")
         self.preview_note_label.setObjectName("MutedText")
         self.preview_note_label.setWordWrap(True)
+        self.preview_note_label.setVisible(False)
 
         self.preview_field_table = QTableWidget(6, 3)
         self.preview_field_table.setHorizontalHeaderLabels(["字段", "偏移", "值"])
@@ -617,7 +644,7 @@ class PreprocessPage(QWidget):
         self.result_status_badge = StatusBadge("待执行", "info", size="sm")
         section = SectionCard(
             "预处理结果",
-            "显示本次任务状态、输出目录、日志和有效信号段结果。",
+            "",
             right_widget=self.result_status_badge,
             compact=True,
         )
@@ -713,7 +740,7 @@ class PreprocessPage(QWidget):
             self.start_button.setEnabled(False)
             self.delete_raw_file_button.setEnabled(False)
             self.file_status_badge.set_status("未选择", "warning", size="sm")
-            self.file_status_label.setText("请选择一条原始文件记录后，再执行预览或预处理。")
+            self.file_status_label.clear()
             return
 
         path = Path(record["path"])
@@ -725,26 +752,22 @@ class PreprocessPage(QWidget):
         self.delete_raw_file_button.setEnabled(not self._is_running())
         if can_preprocess:
             self.file_status_badge.set_status("可预处理", "success", size="sm")
-            action_text = "元数据预览或演示预处理" if self._is_usrp_demo_mode() else "头信息预览或 CAP 预处理"
-            self.file_status_label.setText(f"已选文件：{path.name} | 路径：{path} | 可继续执行{action_text}。")
+            self.file_status_label.clear()
             if not self.output_dir_input.text().strip():
                 self.output_dir_input.setText(str(self._default_output_dir_for(path)))
         elif exists:
             self.file_status_badge.set_status(status_text or "不可预处理", "warning", size="sm")
-            self.file_status_label.setText(
-                f"已选文件：{path.name} | 路径：{path} | 当前状态：{status_text or '不可预处理'}。"
-                "USRP 演示预处理只接收 .iq + 同名 .json，.bin 仅作为采集留档。"
-            )
+            self.file_status_label.clear()
         else:
             self.file_status_badge.set_status("缺失", "danger", size="sm")
-            self.file_status_label.setText(f"未找到文件：{path}。请确认样本文件仍在原位置。")
+            self.file_status_label.setText(f"未找到文件：{path}。")
 
     def _delete_selected_raw_file(self) -> None:
         """删除当前原始文件的数据库记录，可选同步删除本地原始文件。"""
 
         record = self._selected_record()
         if record is None:
-            self.file_status_label.setText("请先选择要删除的原始文件。")
+            self.file_status_label.setText("请先选择原始文件。")
             return
 
         path = Path(record["path"])
@@ -779,7 +802,7 @@ class PreprocessPage(QWidget):
 
         clicked_button = message.clickedButton()
         if clicked_button == cancel_button:
-            self.file_status_label.setText("已取消删除操作。")
+            self.file_status_label.clear()
             return
 
         delete_local_files = clicked_button == delete_files_button
@@ -854,11 +877,11 @@ class PreprocessPage(QWidget):
         self._apply_probe_result(result)
 
     def _load_selected_usrp_preview(self) -> None:
-        """读取当前选中 USRP IQ 文件的元数据和 IQ 预览。"""
+        """读取当前选中 IQ 文件的元数据和 IQ 预览。"""
 
         record = self._selected_record()
         if record is None:
-            self._reset_preview("请先选择一条 USRP IQ 文件记录。", badge_level="warning")
+            self._reset_preview("请先选择一条 IQ 文件记录。", badge_level="warning")
             return
 
         path = Path(record["path"])
@@ -876,7 +899,6 @@ class PreprocessPage(QWidget):
 
         self.current_probe_result = result
         self.current_usrp_info = None
-        # 页面和算法必须保持同一口径，这里会直接展示当前联调使用的头长。
         self.preview_status_badge.set_status("预览就绪", "success", size="sm")
         self.preview_file_value.setText(result.path.name)
         self.preview_size_value.setText(self._format_bytes(result.file_size))
@@ -884,12 +906,10 @@ class PreprocessPage(QWidget):
         self.preview_offset_value.setText(f"0x{result.header_length:03X}")
         self.preview_scope_value.setText(f"前 {result.statistics_window_pairs:,} 组 IQ")
 
-        note_text = "当前按 0x200 / 512 字节头长试跑，带宽与实际采样率已拆分展示。"
+        note_text = ""
         if result.is_partial_capture:
-            note_text = "当前为截取样本，仅代表前 1MB 数据窗口；用于快速验证头字段与早期 IQ 数据。"
-        self.preview_note_label.setText(
-            note_text + " 待确认字段：" + "、".join(result.unresolved_fields)
-        )
+            note_text = "截取样本"
+        self.preview_note_label.setText(note_text)
 
         field_values = [
             result.version,
@@ -934,19 +954,17 @@ class PreprocessPage(QWidget):
         self.slice_length_input.setValue(self.slice_length_input.value())
 
     def _apply_usrp_preview(self, result: USRPDemoPreprocessInfo) -> None:
-        """把 USRP IQ 预览结果渲染到预览区和参数摘要区。"""
+        """把 IQ 预览结果渲染到预览区和参数摘要区。"""
 
         self.current_probe_result = None
         self.current_usrp_info = result
-        self.preview_status_badge.set_status("USRP 就绪", "success", size="sm")
+        self.preview_status_badge.set_status("预览就绪", "success", size="sm")
         self.preview_file_value.setText(result.path.name)
         self.preview_size_value.setText(self._format_bytes(result.file_size))
         self.preview_header_value.setText("-")
         self.preview_offset_value.setText("-")
         self.preview_scope_value.setText(f"前 {result.statistics_window_pairs:,} 组 IQ")
-        self.preview_note_label.setText(
-            "USRP IQ 文件没有 CAP 包头；本表仅展示采样参数，包头偏移列已置空。"
-        )
+        self.preview_note_label.clear()
 
         self._set_preview_field_labels(
             [
@@ -987,11 +1005,12 @@ class PreprocessPage(QWidget):
         self.bandwidth_value.setText(f"{result.bandwidth_hz / 1_000_000:.3f} MHz")
         self.sample_rate_value.setText(f"{result.sample_rate_hz / 1_000_000:.3f} MHz")
         self.center_freq_value.setText(f"{result.center_frequency_hz / 1_000_000:.3f} MHz")
-        self.status_metric.set_value("USRP 预览")
+        self.status_metric.set_value("预览就绪")
 
     def _start_preprocess_run(self) -> None:
         """收集当前参数并启动后台预处理任务。"""
 
+        scroll_position = self._current_page_scroll()
         if self._is_running():
             return
 
@@ -1001,7 +1020,7 @@ class PreprocessPage(QWidget):
             return
 
         if self._is_usrp_demo_mode():
-            self._start_usrp_demo_preprocess(record)
+            self._start_usrp_demo_preprocess(record, scroll_position=scroll_position)
             return
 
         if self.current_probe_result is None or Path(record["path"]) != self.current_probe_result.path:
@@ -1027,7 +1046,7 @@ class PreprocessPage(QWidget):
 
         self._set_running_state(True)
         self.current_run_result = None
-        self.result_message_label.setText("预处理任务已提交，正在后台执行。")
+        self.result_message_label.setText("任务已提交。")
         self.run_state_value.setText("运行中")
         self.result_status_badge.set_status("运行中", "info", size="sm")
         self.run_status_badge.set_status("运行中", "info", size="sm")
@@ -1055,9 +1074,13 @@ class PreprocessPage(QWidget):
         self._run_thread = thread
         self._run_worker = worker
         thread.start()
+        self._preserve_page_scroll(scroll_position)
 
-    def _start_usrp_demo_preprocess(self, record: dict[str, object]) -> None:
-        """收集参数并启动 USRP IQ 演示预处理。"""
+    def _start_usrp_demo_preprocess(self, record: dict[str, object], *, scroll_position: int | None = None) -> None:
+        """收集参数并启动 IQ 预处理。"""
+
+        if scroll_position is None:
+            scroll_position = self._current_page_scroll()
 
         if self.current_usrp_info is None or Path(record["path"]) != self.current_usrp_info.path:
             self._load_selected_usrp_preview()
@@ -1074,13 +1097,13 @@ class PreprocessPage(QWidget):
 
         self._set_running_state(True)
         self.current_run_result = None
-        self.result_message_label.setText("USRP IQ 演示预处理任务已提交，正在后台执行。")
+        self.result_message_label.setText("任务已提交。")
         self.run_state_value.setText("运行中")
         self.result_status_badge.set_status("运行中", "info", size="sm")
         self.run_status_badge.set_status("运行中", "info", size="sm")
         self.status_metric.set_value("运行中")
         self.output_dir_value.setText(config.sample_output_dir)
-        self.log_output.setPlainText("USRP IQ 演示预处理启动中，请稍候...\n")
+        self.log_output.setPlainText("任务启动中，请稍候...\n")
         self.segment_table.setRowCount(0)
 
         thread = QThread(self)
@@ -1101,6 +1124,7 @@ class PreprocessPage(QWidget):
         self._run_thread = thread
         self._run_worker = worker
         thread.start()
+        self._preserve_page_scroll(scroll_position)
 
     def _on_run_started(self, input_file_path: str) -> None:
         """在任务开始时更新页面提示。"""
@@ -1145,15 +1169,11 @@ class PreprocessPage(QWidget):
             if result.sample_records:
                 self.sample_records_generated.emit(result.sample_records)
                 if isinstance(result, USRPDemoPreprocessResult):
-                    self.config_status_label.setText(
-                        f"本次已同步 {len(result.sample_records)} 条 USRP 候选样本，设备映射表已按新频点自动补齐。"
-                    )
+                    self.config_status_label.setText(f"已同步 {len(result.sample_records)} 条样本。")
                 else:
-                    self.config_status_label.setText(
-                        f"本次已同步 {len(result.sample_records)} 条候选样本记录，可直接进入数据集管理进行标注确认。"
-                    )
+                    self.config_status_label.setText(f"已同步 {len(result.sample_records)} 条样本。")
             else:
-                self.config_status_label.setText("本次未生成可同步的有效样本记录，可继续调整阈值后重试。")
+                self.config_status_label.setText("未生成样本。")
         else:
             self.run_state_value.setText("失败")
             self.result_message_label.setText(result.message or "预处理失败。")
@@ -1182,12 +1202,10 @@ class PreprocessPage(QWidget):
                 save_usrp_preprocess_result(result)
                 mapping_count = upsert_usrp_label_mappings(result.sample_records)
                 if mapping_count:
-                    self.config_status_label.setText(
-                        f"USRP 演示预处理已写入样本，并自动补齐 {mapping_count} 条设备映射。"
-                    )
+                    self.config_status_label.setText(f"已补齐 {mapping_count} 条设备映射。")
                 self.workflow_records_changed.emit()
             except Exception as exc:
-                self.config_status_label.setText(f"USRP 演示预处理已完成，但数据库写入失败：{exc}")
+                self.config_status_label.setText(f"数据库写入失败：{exc}")
             return
 
         if self._last_run_config is None:
@@ -1327,7 +1345,7 @@ class PreprocessPage(QWidget):
         return default_usrp_demo_output_dir() if self._is_usrp_demo_mode() else default_preprocess_output_dir()
 
     def _is_usrp_demo_mode(self) -> bool:
-        """返回当前是否处于 USRP IQ 演示预处理模式。"""
+        """返回是否处于 IQ 文件预处理模式。"""
 
         return hasattr(self, "input_mode_box") and self.input_mode_box.currentIndex() == 1
 

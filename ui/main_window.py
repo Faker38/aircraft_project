@@ -32,12 +32,12 @@ class MainWindow(QMainWindow):
     """Application shell that hosts the sidebar and workflow pages."""
 
     PAGE_META: dict[str, tuple[str, str]] = {
-        "overview": ("工程总览", "查看当前流程阶段、系统状态和任务入口。"),
-        "capture": ("步骤 1 · 数据采集", "完成设备接入、参数配置和原始文件记录。"),
-        "preprocess": ("步骤 2 · 信号预处理", "完成信号筛选、切片和样本生成。"),
-        "dataset": ("步骤 3 · 数据集管理", "完成已处理样本复核、标签维护与数据集构建。"),
-        "train": ("步骤 4 · 模型训练", "执行训练评估并导出模型。"),
-        "recognition": ("步骤 5 · 无人机识别", "执行类型识别与个体指纹识别。"),
+        "overview": ("工程总览", ""),
+        "capture": ("步骤 1 · 数据采集", ""),
+        "preprocess": ("步骤 2 · 信号预处理", ""),
+        "dataset": ("步骤 3 · 数据集管理", ""),
+        "train": ("步骤 4 · 模型训练", ""),
+        "recognition": ("步骤 5 · 无人机识别", ""),
     }
 
     def __init__(self) -> None:
@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._build_sidebar())
         root_layout.addWidget(self._build_main_area(), 1)
 
-        self.statusBar().showMessage("系统就绪 | 当前模式：联调")
+        self.statusBar().showMessage("系统就绪")
 
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._refresh_clock)
@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         subtitle_label = QLabel(APP_SUBTITLE)
         subtitle_label.setObjectName("AppSubTitle")
         subtitle_label.setWordWrap(True)
+        subtitle_label.setVisible(bool(APP_SUBTITLE))
 
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
@@ -131,7 +132,7 @@ class MainWindow(QMainWindow):
         mode_row.setSpacing(8)
         mode_label = QLabel("运行模式")
         mode_label.setObjectName("FieldLabel")
-        self.sidebar_mode_badge = StatusBadge("联调模式", "info", size="sm")
+        self.sidebar_mode_badge = StatusBadge("运行中", "info", size="sm")
         mode_row.addWidget(mode_label)
         mode_row.addStretch(1)
         mode_row.addWidget(self.sidebar_mode_badge, 0, Qt.AlignmentFlag.AlignRight)
@@ -231,6 +232,7 @@ class MainWindow(QMainWindow):
         self.page_description_label = QLabel()
         self.page_description_label.setObjectName("PageDescription")
         self.page_description_label.setWordWrap(True)
+        self.page_description_label.setVisible(False)
 
         title_layout.addWidget(self.page_title_label)
         title_layout.addWidget(self.page_description_label)
@@ -244,7 +246,7 @@ class MainWindow(QMainWindow):
 
         mode_label = QLabel("运行模式")
         mode_label.setObjectName("HeaderMetaLabel")
-        self.header_mode_badge = StatusBadge("联调模式", "info", size="sm")
+        self.header_mode_badge = StatusBadge("运行中", "info", size="sm")
 
         device_label = QLabel("设备状态")
         device_label.setObjectName("HeaderMetaLabel")
@@ -279,12 +281,12 @@ class MainWindow(QMainWindow):
         title, description = self.PAGE_META[key]
         self.page_title_label.setText(title)
         self.page_description_label.setText(description)
-        self.statusBar().showMessage(f"当前页面：{title}")
+        self.statusBar().showMessage(f"页面：{title}")
 
     def _update_connection_badge(self, connected: bool, device_text: str) -> None:
         """Update shared device status widgets from the capture page."""
 
-        if "联调模拟" in device_text or "预检中" in device_text or "待处理" in device_text:
+        if "预检中" in device_text or "待处理" in device_text:
             badge_level = "warning"
         elif connected:
             badge_level = "success"

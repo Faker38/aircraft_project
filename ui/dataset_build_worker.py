@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import random
 from typing import Callable
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from config import DATASETS_DIR
 from services import DatasetVersionRecord, SampleRecord, create_dataset_version, write_dataset_manifest
 
 SPLIT_RANDOM_SEED = 42
 SPLIT_NAMES = ("train", "val", "test")
+NPZ_SAMPLE_LENGTH = 4096
+DEFAULT_NPZ_MAX_ITEMS = 1000
 
 
 def collect_dataset_candidates(
@@ -204,6 +209,96 @@ def _build_device_isolated_split(
     return split_values
 
 
+def write_npz_dataset(
+    *,
+    version_id: str,
+    selected_records: list[SampleRecord],
+    label_values: dict[str, str],
+    split_values: dict[str, str],
+    max_items_per_npz: int,
+) -> list[str]:
+    """Write formal train/test NPZ files for one dataset version."""
+
+    output_dir = DATASETS_DIR / version_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    max_items = max(1, int(max_items_per_npz or DEFAULT_NPZ_MAX_ITEMS))
+    records_by_split: dict[str, list[SampleRecord]] = {split_name: [] for split_name in SPLIT_NAMES}
+    for record in selected_records:
+        split_name = split_values.get(record.sample_id, "train")
+        if split_name in records_by_split:
+            records_by_split[split_name].append(record)
+
+    written_paths: list[str] = []
+    for split_name in SPLIT_NAMES:
+        split_records = sorted(records_by_split[split_name], key=lambda item: item.sample_id)
+        if not split_records:
+            continue
+        for chunk_index, start in enumerate(range(0, len(split_records), max_items), start=1):
+            chunk_records = split_records[start : start + max_items]
+            file_name = f"{split_name}.npz" if len(split_records) <= max_items else f"{split_name}_part{chunk_index:03d}.npz"
+            output_path = output_dir / file_name
+            x_values = np.stack([_load_sample_as_iq_matrix(record.sample_file_path) for record in chunk_records])
+            y_values = np.asarray([label_values[record.sample_id] for record in chunk_records])
+            sample_ids = np.asarray([record.sample_id for record in chunk_records])
+            file_ids = np.asarray([Path(record.raw_file_path).stem for record in chunk_records])
+            source_paths = np.asarray([record.sample_file_path for record in chunk_records])
+            np.savez_compressed(
+                output_path,
+                data=x_values,
+                label=y_values,
+                x=x_values,
+                y=y_values,
+                sample_ids=sample_ids,
+                file_ids=file_ids,
+                source_paths=source_paths,
+            )
+            written_paths.append(str(output_path))
+    return written_paths
+
+
+def _load_sample_as_iq_matrix(sample_file_path: str) -> np.ndarray:
+    """Load one sample and normalize it to shape (2, 4096)."""
+
+    path = Path(sample_file_path)
+    if not path.exists():
+        raise ValueError(f"样本文件不存在：{path}")
+    array = np.load(path, allow_pickle=False)
+    if hasattr(array, "files"):
+        if "x" in array:
+            array = array["x"]
+        elif "data" in array:
+            array = array["data"]
+        else:
+            raise ValueError(f"NPZ 样本缺少 data 或 x 字段：{path}")
+
+    if np.iscomplexobj(array):
+        flat = np.ravel(array)
+        i_values = np.real(flat)
+        q_values = np.imag(flat)
+    else:
+        numeric = np.asarray(array)
+        if numeric.ndim >= 3:
+            numeric = numeric.reshape(-1, *numeric.shape[-2:])
+            numeric = numeric[0]
+        if numeric.ndim == 2 and numeric.shape[0] == 2:
+            i_values = numeric[0]
+            q_values = numeric[1]
+        elif numeric.ndim == 2 and numeric.shape[1] == 2:
+            i_values = numeric[:, 0]
+            q_values = numeric[:, 1]
+        else:
+            flat = np.ravel(numeric)
+            i_values = flat
+            q_values = np.zeros_like(flat)
+
+    output = np.zeros((2, NPZ_SAMPLE_LENGTH), dtype=np.float32)
+    i_array = np.asarray(i_values, dtype=np.float32).ravel()[:NPZ_SAMPLE_LENGTH]
+    q_array = np.asarray(q_values, dtype=np.float32).ravel()[:NPZ_SAMPLE_LENGTH]
+    output[0, : i_array.size] = i_array
+    output[1, : q_array.size] = q_array
+    return output
+
+
 class DatasetBuildWorker(QObject):
     """把一次数据集版本生成任务放到 UI 线程之外执行。"""
 
@@ -221,6 +316,7 @@ class DatasetBuildWorker(QObject):
         train_ratio: int,
         val_ratio: int,
         test_ratio: int,
+        max_items_per_npz: int = DEFAULT_NPZ_MAX_ITEMS,
     ) -> None:
         """保存本次数据集生成所需的输入参数。"""
 
@@ -232,6 +328,7 @@ class DatasetBuildWorker(QObject):
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
+        self.max_items_per_npz = max_items_per_npz
 
     @Slot()
     def run(self) -> None:
@@ -245,14 +342,14 @@ class DatasetBuildWorker(QObject):
             sample_total = len(selected_sample_ids)
             self.progress_changed.emit(0, max(sample_total, 1), "正在收集可生成样本")
             if not label_counts:
-                self.failed.emit("当前没有可用样本，无法生成数据集版本。请确认样本已标注、标签非空且处于纳入候选。")
+                self.failed.emit("没有可用样本，无法生成数据集。")
                 return
 
             selected_sample_id_set = set(selected_sample_ids)
             selected_records = [record for record in self.sample_records if record.sample_id in selected_sample_id_set]
             source_types = {record.source_type for record in selected_records}
             if source_types == {"usrp_preprocess"}:
-                source_summary = "USRP演示样本"
+                source_summary = "IQ 预处理样本"
             elif "usrp_preprocess" in source_types:
                 source_summary = "混合预处理样本"
             else:
@@ -279,6 +376,14 @@ class DatasetBuildWorker(QObject):
             )
             self.progress_changed.emit(sample_total, max(sample_total, 1), "正在写入数据库")
             create_dataset_version(record, selected_sample_ids, label_values, split_values)
+            self.progress_changed.emit(sample_total, max(sample_total, 1), "正在生成 NPZ")
+            npz_paths = write_npz_dataset(
+                version_id=self.version_id,
+                selected_records=selected_records,
+                label_values=label_values,
+                split_values=split_values,
+                max_items_per_npz=self.max_items_per_npz,
+            )
             self.progress_changed.emit(sample_total, max(sample_total, 1), "正在生成 manifest")
             manifest_path = write_dataset_manifest(self.version_id)
         except Exception as exc:  # pragma: no cover - 线程边界上的保护性兜底
@@ -289,6 +394,7 @@ class DatasetBuildWorker(QObject):
             {
                 "record": record,
                 "manifest_path": str(manifest_path) if manifest_path is not None else "",
+                "npz_paths": npz_paths,
                 "label_counts": label_counts,
                 "sample_total": sample_total,
             }

@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP_NAME: str = "无人机射频信号识别系统"
 APP_VERSION: str = "0.1.0"
-APP_SUBTITLE: str = "3943B 射频识别联调平台"
+APP_SUBTITLE: str = ""
 
 BASE_DIR: Path = Path(__file__).resolve().parent
 DB_DIR: Path = BASE_DIR / "db"

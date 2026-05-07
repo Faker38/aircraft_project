@@ -52,10 +52,10 @@ class OverviewPage(QWidget):
         """Create a restrained visual banner for the overview page."""
 
         return VisualHeroCard(
-            "工程总览 · 当前流程基线",
-            "界面围绕采集、预处理、数据集、训练与识别五个步骤组织，当前强调流程闭环、结果可追溯和演示稳定性。",
+            "工程总览",
+            "",
             background_name="overview_header_bg.svg",
-            chips=["五步主流程", "结果可追溯", "演示链路已打通"],
+            chips=[],
             ornament_name="decor_signal_corner_a.svg",
             height=176,
         )
@@ -65,7 +65,7 @@ class OverviewPage(QWidget):
 
         section = SectionCard(
             "任务总览",
-            "当前任务按采集、预处理、数据集、训练、识别五个步骤顺序推进。",
+            "",
             right_widget=StatusBadge("步骤 1 就绪", "info", size="sm"),
             compact=True,
         )
@@ -85,7 +85,7 @@ class OverviewPage(QWidget):
 
         summary_rows = [
             ("设备状态", self.device_value_label),
-            ("当前阶段", stage_value),
+            ("阶段", stage_value),
             ("数据集版本", self.version_value_label),
         ]
 
@@ -103,11 +103,7 @@ class OverviewPage(QWidget):
         primary_button.setObjectName("PrimaryButton")
         primary_button.clicked.connect(lambda: self.navigate_requested.emit("capture"))
 
-        hint_label = QLabel("优先沿主流程推进，样本整理完成后再进入训练与识别。")
-        hint_label.setObjectName("MutedText")
-
         action_row.addWidget(primary_button, 0, Qt.AlignmentFlag.AlignLeft)
-        action_row.addWidget(hint_label)
         action_row.addStretch(1)
 
         section.body_layout.addLayout(grid)
@@ -119,7 +115,7 @@ class OverviewPage(QWidget):
 
         section = SectionCard(
             "流程入口",
-            "按业务顺序进入对应模块，保持单一主流程。",
+            "",
             compact=True,
         )
 
@@ -128,17 +124,17 @@ class OverviewPage(QWidget):
         grid.setVerticalSpacing(14)
 
         steps = [
-            ("capture", "01", "数据采集", "待执行", "设备接入与记录控制"),
-            ("preprocess", "02", "信号预处理", "待处理", "原始文件筛选与样本生成"),
-            ("dataset", "03", "数据集管理", "待整理", "已处理样本复核、标签维护与数据集生成"),
-            ("train", "04", "模型训练", "可训练", "训练评估与模型导出"),
-            ("recognition", "05", "无人机识别", "待识别", "类型识别与个体指纹识别"),
+            ("capture", "01", "数据采集", "就绪"),
+            ("preprocess", "02", "信号预处理", "就绪"),
+            ("dataset", "03", "数据集管理", "就绪"),
+            ("train", "04", "模型训练", "就绪"),
+            ("recognition", "05", "无人机识别", "就绪"),
         ]
 
-        for index, (page_key, step_no, title, state, hint) in enumerate(steps):
+        for index, (page_key, step_no, title, state) in enumerate(steps):
             row = index // 2
             column = index % 2
-            grid.addWidget(self._build_step_card(page_key, step_no, title, state, hint), row, column)
+            grid.addWidget(self._build_step_card(page_key, step_no, title, state), row, column)
 
         section.body_layout.addLayout(grid)
         return section
@@ -149,7 +145,6 @@ class OverviewPage(QWidget):
         step_no: str,
         title: str,
         state: str,
-        hint: str,
     ) -> QFrame:
         """Create a compact workflow entry card."""
 
@@ -175,16 +170,12 @@ class OverviewPage(QWidget):
         header_row.addStretch(1)
 
         state_badge = StatusBadge(state, "info", size="sm")
-        hint_label = QLabel(hint)
-        hint_label.setObjectName("FlowHint")
-        hint_label.setWordWrap(True)
 
         open_button = QPushButton("进入模块")
         open_button.clicked.connect(lambda checked=False, key=page_key: self.navigate_requested.emit(key))
 
         layout.addLayout(header_row)
         layout.addWidget(state_badge, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(hint_label)
         layout.addWidget(open_button, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addStretch(1)
         return card
@@ -192,13 +183,13 @@ class OverviewPage(QWidget):
     def _build_metrics_section(self) -> SectionCard:
         """Build the compact key metrics section."""
 
-        section = SectionCard("关键指标", "显示当前主流程常用指标。", compact=True)
+        section = SectionCard("关键指标", "", compact=True)
 
         row = QHBoxLayout()
         row.setSpacing(12)
         self.raw_metric = MetricCard("原始任务数", "0", compact=True)
         self.sample_metric = MetricCard("已处理样本数", "0", accent_color="#7CB98B", compact=True)
-        self.version_metric = MetricCard("当前数据集版本", "未生成", accent_color="#5EA6D3", compact=True)
+        self.version_metric = MetricCard("数据集", "未生成", accent_color="#5EA6D3", compact=True)
         self.model_metric = MetricCard("最新训练模型", "未生成", accent_color="#C59A63", compact=True)
         row.addWidget(self.raw_metric)
         row.addWidget(self.sample_metric)

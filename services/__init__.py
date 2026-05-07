@@ -33,6 +33,11 @@ from services.database import (
     upsert_samples,
     write_dataset_manifest,
 )
+from services.external_dataset_import_service import (
+    ExternalDatasetImportError,
+    ExternalDatasetImportResult,
+    import_external_dataset_directory,
+)
 from services.model_evaluation_service import evaluate_type_model
 from services.model_service import (
     ModelServiceError,
@@ -109,6 +114,7 @@ __all__ = [
     "get_workflow_overview_counts",
     "get_trained_model",
     "init_database",
+    "import_external_dataset_directory",
     "list_label_mappings",
     "list_orphan_local_paths",
     "list_raw_files",
@@ -124,6 +130,8 @@ __all__ = [
     "PreprocessRunResult",
     "default_preprocess_output_dir",
     "evaluate_type_model",
+    "ExternalDatasetImportError",
+    "ExternalDatasetImportResult",
     "extract_iq_features",
     "load_trained_model",
     "ModelServiceError",

@@ -1,4 +1,4 @@
-"""无人机识别页：类型识别接入真实模型，个体识别保留演示态。"""
+"""无人机识别页。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from ui.widgets import MetricCard, SectionCard, SmoothScrollArea, StatusBadge, V
 
 
 class RecognitionPage(QWidget):
-    """工作流页面：类型识别真实推理，个体识别演示显示。"""
+    """工作流页面：类型识别和个体识别。"""
 
     sample_refresh_requested = Signal()
 
@@ -56,7 +56,7 @@ class RecognitionPage(QWidget):
         metrics_row = QHBoxLayout()
         metrics_row.setSpacing(12)
         self.type_model_metric = MetricCard("类型识别模型", "未生成", compact=True)
-        self.individual_model_metric = MetricCard("指纹识别模型", "待接入", accent_color="#7CB98B", compact=True)
+        self.individual_model_metric = MetricCard("指纹识别模型", "无可用模型", accent_color="#7CB98B", compact=True)
         self.latest_result_metric = MetricCard("最近识别结果", "待识别", accent_color="#C59A63", compact=True)
         metrics_row.addWidget(self.type_model_metric)
         metrics_row.addWidget(self.individual_model_metric)
@@ -68,7 +68,7 @@ class RecognitionPage(QWidget):
             self._build_recognition_tab(
                 mode_key="type",
                 mode_title="无人机类型识别",
-                mode_hint="当前直接读取训练页输出的真实模型文件，对样本执行真实类型推理。",
+                mode_hint="",
                 status_text="待识别",
             ),
             "无人机类型识别",
@@ -77,8 +77,8 @@ class RecognitionPage(QWidget):
             self._build_recognition_tab(
                 mode_key="individual",
                 mode_title="无人机个体指纹识别",
-                mode_hint="当前保留个体指纹识别入口，真实个体模型与推理服务待接入。",
-                status_text="待接入",
+                mode_hint="",
+                status_text="无可用模型",
             ),
             "无人机个体指纹识别",
         )
@@ -87,17 +87,16 @@ class RecognitionPage(QWidget):
         scroll_area.setWidget(container)
         root_layout.addWidget(scroll_area)
 
-        # 个体识别当前保留入口，这里先填入固定说明项，避免下拉框为空。
         self._refresh_model_selector("individual")
 
     def _build_visual_banner(self) -> VisualHeroCard:
         """Create the recognition-page visual banner."""
 
         return VisualHeroCard(
-            "无人机识别 · 实时判别视图",
-            "当前类型识别页直接读取训练页输出的真实模型进行推理；个体指纹识别入口已保留，真实服务待接入。",
+            "无人机识别",
+            "",
             background_name="recognition_header_bg.svg",
-            chips=["真实模型推理", "适用域提示", "结果可追溯"],
+            chips=[],
             ornament_name="decor_lock_target_c.svg",
             height=170,
         )
@@ -179,12 +178,7 @@ class RecognitionPage(QWidget):
         layout.addWidget(source_card, 1)
 
         status_badge = StatusBadge(status_text, "info", size="sm")
-        result_card = SectionCard(
-            "识别结果",
-            "显示当前样本标签、预测结果、预测置信度、适用域和模型信息。",
-            right_widget=status_badge,
-            compact=True,
-        )
+        result_card = SectionCard("识别结果", "", right_widget=status_badge, compact=True)
         result_card.setMinimumWidth(450)
         result_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
@@ -237,12 +231,8 @@ class RecognitionPage(QWidget):
                 model_selector.addItem(display_text, record)
                 model_selector.setItemData(model_selector.count() - 1, display_text, Qt.ItemDataRole.ToolTipRole)
         else:
-            model_selector.addItem("保留功能 | 真实个体模型待接入", "pending")
-            model_selector.setItemData(
-                model_selector.count() - 1,
-                "保留功能 | 真实个体模型待接入",
-                Qt.ItemDataRole.ToolTipRole,
-            )
+            model_selector.addItem("无可用模型", "pending")
+            model_selector.setItemData(model_selector.count() - 1, "无可用模型", Qt.ItemDataRole.ToolTipRole)
         model_selector.blockSignals(False)
 
         if model_selector.count() == 0:
@@ -254,7 +244,7 @@ class RecognitionPage(QWidget):
             load_button.setEnabled(True)
             self._refresh_sample_selector(mode_key)
             if mode_key == "type" and not self.sample_records:
-                self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
+                self._set_result_rows(mode_key, [["无可用模型", "请先生成类型识别模型"]], status_text="待模型")
             return
 
         target_index = 0
@@ -299,7 +289,7 @@ class RecognitionPage(QWidget):
             sample_selector.addItem(display_text, record)
             tooltip_text = (
                 f"样本编号：{record.sample_id}\n"
-                f"当前标签：{self._display_label(label_text or '未标注')}\n"
+                f"标签：{self._display_label(label_text or '未标注')}\n"
                 f"来源文件：{record.raw_file_name}\n"
                 f"来源路径：{record.raw_file_path}"
             )
@@ -318,14 +308,14 @@ class RecognitionPage(QWidget):
             self._load_selected_sample(mode_key)
             return
 
-        empty_hint = "当前无预处理样本，请先完成预处理或标注同步" if mode_key == "type" else "个体识别样本暂未准备"
+        empty_hint = "无预处理样本" if mode_key == "type" else "无样本"
         run_button = controls["run_button"]
         load_button = controls["load_button"]
         assert isinstance(run_button, QPushButton)
         assert isinstance(load_button, QPushButton)
         run_button.setEnabled(False)
         load_button.setEnabled(False)
-        self._set_result_rows(mode_key, [["当前无可用样本", empty_hint]], status_text="待识别")
+        self._set_result_rows(mode_key, [["无可用样本", empty_hint]], status_text="待识别")
 
     def _records_for_mode(
         self,
@@ -333,7 +323,7 @@ class RecognitionPage(QWidget):
         *,
         model_record: TrainedModelRecord | None = None,
     ) -> list[SampleRecord]:
-        """按页签模式过滤更适合演示的样本。"""
+        """按页签模式过滤样本。"""
 
         if mode_key == "type":
             records = list(self.sample_records)
@@ -380,7 +370,7 @@ class RecognitionPage(QWidget):
             else:
                 self.type_model_metric.set_value("未生成")
         else:
-            self.individual_model_metric.set_value("待接入")
+            self.individual_model_metric.set_value("无可用模型")
 
         if mode_key == "type":
             self._refresh_sample_selector(mode_key)
@@ -404,9 +394,9 @@ class RecognitionPage(QWidget):
 
         record = sample_selector.currentData()
         if not isinstance(record, SampleRecord):
-            waiting_text = "请先在训练页生成模型" if mode_key == "type" else "个体指纹识别入口已保留，真实服务待接入"
+            waiting_text = "请先生成模型" if mode_key == "type" else "无可用模型"
             sample_selector.setToolTip("")
-            self._set_result_rows(mode_key, [["当前无可用样本", waiting_text]], status_text="待识别")
+            self._set_result_rows(mode_key, [["无可用样本", waiting_text]], status_text="待识别")
             return
 
         run_button = controls["run_button"]
@@ -427,9 +417,9 @@ class RecognitionPage(QWidget):
             if not current_label:
                 label_status = "样本未标注；可识别，但不计算命中。"
             elif current_label in model_record.label_space:
-                label_status = "样本标签在当前模型标签空间内。"
+                label_status = "样本标签在模型标签空间内。"
             else:
-                label_status = "样本标签不在当前模型标签空间内；可识别，但不计算命中。"
+                label_status = "样本标签不在模型标签空间内；可识别，但不计算命中。"
             domain_status = self._domain_status_text(record, model_record)
         else:
             domain_status = "-"
@@ -439,8 +429,8 @@ class RecognitionPage(QWidget):
         self._set_result_rows(
             mode_key,
             [
-                ["当前样本", record.sample_id],
-                ["当前标签", self._display_label(current_label or "未标注")],
+                ["样本", record.sample_id],
+                ["标签", self._display_label(current_label or "未标注")],
                 ["来源文件", record.raw_file_name],
                 ["来源路径", record.raw_file_path],
                 ["来源类型", record.source_label],
@@ -469,20 +459,20 @@ class RecognitionPage(QWidget):
 
         record = sample_selector.currentData()
         if not isinstance(record, SampleRecord):
-            self._set_result_rows(mode_key, [["当前无可用样本", "请先在数据集页整理样本"]], status_text="待识别")
+            self._set_result_rows(mode_key, [["无可用样本", "请先在数据集页整理样本"]], status_text="待识别")
             return
 
         if mode_key == "individual":
             current_label = record.label_individual or "未标注"
             rows = [
-                ["当前样本", record.sample_id],
-                ["当前标签", current_label],
+                ["样本", record.sample_id],
+                ["标签", current_label],
                 ["来源文件", record.raw_file_name],
                 ["来源路径", record.raw_file_path],
-                ["当前状态", "个体指纹识别入口已保留，真实模型与推理服务待接入。"],
+                ["模型状态", "无可用模型"],
             ]
-            self.latest_result_metric.set_value("个体待接入")
-            self._set_result_rows(mode_key, rows, status_text="待接入")
+            self.latest_result_metric.set_value("无可用模型")
+            self._set_result_rows(mode_key, rows, status_text="无可用模型")
             return
 
         model_record = model_selector.currentData()
@@ -490,7 +480,7 @@ class RecognitionPage(QWidget):
             run_button = controls["run_button"]
             assert isinstance(run_button, QPushButton)
             run_button.setEnabled(False)
-            self._set_result_rows(mode_key, [["当前无可用模型", "请先在训练页生成类型识别模型"]], status_text="待模型")
+            self._set_result_rows(mode_key, [["无可用模型", "请先生成类型识别模型"]], status_text="待模型")
             return
 
         try:
@@ -499,8 +489,8 @@ class RecognitionPage(QWidget):
             self._set_result_rows(
                 mode_key,
                 [
-                    ["当前样本", record.sample_id],
-                    ["当前模型", model_record.model_id],
+                    ["样本", record.sample_id],
+                    ["模型", model_record.model_id],
                     ["错误信息", str(exc)],
                 ],
                 status_text="识别失败",
@@ -524,18 +514,18 @@ class RecognitionPage(QWidget):
         elif current_label == "未标注":
             match_hint = "样本未标注，命中判断不可用。"
         elif current_label not in label_space:
-            match_hint = "样本标签不在当前模型标签空间内，命中判断不可用。"
+            match_hint = "样本标签不在模型标签空间内，命中判断不可用。"
         probability_text = self._format_probability_text(result.probabilities)
         confidence_text = f"{result.confidence * 100:.2f}%"
 
         rows = [
-            ["当前样本", sample_record.sample_id],
-            ["当前标签", self._display_label(current_label)],
+            ["样本", sample_record.sample_id],
+            ["标签", self._display_label(current_label)],
             ["预测标签", self._display_label(predicted_label)],
             ["预测置信度", confidence_text],
             ["类别概率", probability_text],
             ["是否命中", is_match],
-            ["命中说明", match_hint or "当前标签可用于命中判断。"],
+            ["命中说明", match_hint or "标签可用于命中判断。"],
             ["适用域提示", self._domain_status_text(sample_record, result.model_record)],
             ["置信度说明", "预测置信度是 RandomForest 的最大类别概率，不等同于模型准确率。"],
             ["来源文件", sample_record.raw_file_name],
@@ -596,7 +586,7 @@ class RecognitionPage(QWidget):
         """把模型类别概率格式化成紧凑、可读的结果文本。"""
 
         if not probabilities:
-            return "当前模型未提供类别概率。"
+            return "模型未提供类别概率。"
         sorted_items = sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
         return " / ".join(
             f"{self._display_label(label)} {probability * 100:.2f}%"
@@ -608,7 +598,7 @@ class RecognitionPage(QWidget):
 
         warnings = self._domain_warning_messages(sample_record, model_record)
         if not warnings:
-            return "样本来源、中心频率和采样率在当前模型训练范围内。"
+            return "样本来源、中心频率和采样率在模型训练范围内。"
         return "域外样本：" + "；".join(warnings)
 
     def _domain_warning_messages(

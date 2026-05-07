@@ -240,10 +240,6 @@ class VisualHeroCard(QFrame):
         title_label.setObjectName("HeroTitle")
         title_label.setWordWrap(True)
 
-        description_label = QLabel(description)
-        description_label.setObjectName("HeroDescription")
-        description_label.setWordWrap(True)
-
         chip_row = QHBoxLayout()
         chip_row.setContentsMargins(0, 0, 0, 0)
         chip_row.setSpacing(8)
@@ -255,7 +251,11 @@ class VisualHeroCard(QFrame):
         chip_row.addStretch(1)
 
         text_layout.addWidget(title_label)
-        text_layout.addWidget(description_label)
+        if description:
+            description_label = QLabel(description)
+            description_label.setObjectName("HeroDescription")
+            description_label.setWordWrap(True)
+            text_layout.addWidget(description_label)
         if chips:
             text_layout.addLayout(chip_row)
         text_layout.addStretch(1)
@@ -308,12 +308,12 @@ class VisualInfoStrip(QFrame):
         title_label.setObjectName("VisualInfoTitle")
         title_label.setWordWrap(True)
 
-        desc_label = QLabel(description)
-        desc_label.setObjectName("VisualInfoDescription")
-        desc_label.setWordWrap(True)
-
         text_layout.addWidget(title_label)
-        text_layout.addWidget(desc_label)
+        if description:
+            desc_label = QLabel(description)
+            desc_label.setObjectName("VisualInfoDescription")
+            desc_label.setWordWrap(True)
+            text_layout.addWidget(desc_label)
         text_layout.addStretch(1)
         layout.addLayout(text_layout, 1)
 

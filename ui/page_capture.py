@@ -56,13 +56,12 @@ from ui.widgets import (
     SmoothScrollArea,
     StatusBadge,
     VisualHeroCard,
-    VisualInfoStrip,
     configure_scrollable,
 )
 
 
 class CapturePage(QWidget):
-    """Capture workflow page for 3943B demo mode and USRP real capture V1."""
+    """Capture workflow page for device connection and raw signal acquisition."""
 
     connection_state_changed = Signal(bool, str)
     raw_capture_completed = Signal(object)
@@ -72,6 +71,7 @@ class CapturePage(QWidget):
         """Initialize the capture page."""
 
         super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._advance_mock_capture)
         self._connected = False
@@ -84,7 +84,7 @@ class CapturePage(QWidget):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        scroll_area = SmoothScrollArea()
+        self.scroll_area = SmoothScrollArea()
 
         container = QWidget()
         self.content_layout = QVBoxLayout(container)
@@ -108,8 +108,8 @@ class CapturePage(QWidget):
         self.content_layout.addLayout(bottom_row)
         self.content_layout.addStretch(1)
 
-        scroll_area.setWidget(container)
-        root_layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(container)
+        root_layout.addWidget(self.scroll_area)
 
         self._refresh_files_empty_state()
         self._update_visa_preview()
@@ -117,14 +117,33 @@ class CapturePage(QWidget):
         self._refresh_summary_metrics()
         self._apply_mode_change()
 
+    def _current_page_scroll(self) -> int:
+        """Return the capture page outer scroll position."""
+
+        return int(self.scroll_area.verticalScrollBar().value())
+
+    def _preserve_page_scroll(self, position: int) -> None:
+        """Restore the outer page scroll after the current UI update settles."""
+
+        def apply_restore() -> None:
+            scroll_bar = self.scroll_area.verticalScrollBar()
+            target = max(scroll_bar.minimum(), min(scroll_bar.maximum(), int(position)))
+            scroll_bar.setValue(target)
+            controller = getattr(self.scroll_area, "_smooth_scroll_controller", None)
+            if controller is not None and hasattr(controller, "_target_value"):
+                controller._target_value = scroll_bar.value()
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+        QTimer.singleShot(0, apply_restore)
+
     def _build_visual_banner(self) -> VisualHeroCard:
         """Create the capture-page visual banner."""
 
         return VisualHeroCard(
-            "数据采集 · 双模式接入",
-            "保留 3943B 演示链路，同时新增 USRP 真实采集 V1。当前优先保证原始文件登记、采集日志和后续处理可衔接。",
+            "数据采集",
+            "",
             background_name="capture_header_bg.svg",
-            chips=["3943B 演示", "USRP 真实采集", "原始 IQ 文件登记"],
+            chips=[],
             ornament_name="decor_signal_corner_a.svg",
             height=170,
         )
@@ -136,7 +155,7 @@ class CapturePage(QWidget):
         row.setSpacing(12)
 
         self.connection_metric = MetricCard("设备状态", "未接入", compact=True)
-        self.mode_metric = MetricCard("采集模式", "3943B 演示", compact=True, accent_color="#7CB98B")
+        self.mode_metric = MetricCard("采集设备", "3943B", compact=True, accent_color="#7CB98B")
         self.file_metric = MetricCard("原始文件", "0", compact=True, accent_color="#C59A63")
 
         row.addWidget(self.connection_metric)
@@ -150,7 +169,7 @@ class CapturePage(QWidget):
         self.connection_badge = StatusBadge("设备未接入", "danger", size="sm")
         section = SectionCard(
             "设备连接",
-            "支持 3943B 联调模拟入口与 USRP 真实采集 V1。",
+            "",
             right_widget=self.connection_badge,
             compact=True,
         )
@@ -158,9 +177,9 @@ class CapturePage(QWidget):
         mode_row = QHBoxLayout()
         mode_row.setSpacing(12)
         self.capture_mode_box = QComboBox()
-        self.capture_mode_box.addItems(["3943B 联调模拟", "USRP 真实采集"])
+        self.capture_mode_box.addItems(["3943B", "USRP B210"])
         self.capture_mode_box.currentIndexChanged.connect(self._apply_mode_change)
-        mode_row.addWidget(QLabel("采集模式"))
+        mode_row.addWidget(QLabel("采集设备"))
         mode_row.addWidget(self.capture_mode_box, 1)
 
         self.connection_stack = QStackedWidget()
@@ -200,7 +219,7 @@ class CapturePage(QWidget):
         return section
 
     def _build_3943b_connection_widget(self) -> QWidget:
-        """Build the 3943B demo connection form."""
+        """Build the 3943B connection form."""
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -253,7 +272,7 @@ class CapturePage(QWidget):
         return widget
 
     def _build_usrp_connection_widget(self) -> QWidget:
-        """Build the USRP real capture connection form."""
+        """Build the USRP connection form."""
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -266,12 +285,6 @@ class CapturePage(QWidget):
 
         self.usrp_executable_input = QLineEdit(DEFAULT_USRP_EXECUTABLE)
         self.usrp_executable_input.textChanged.connect(self._update_usrp_command_preview)
-        executable_hint = QLabel(
-            "rx_samples_to_file 是 UHD 安装后自带的采集示例程序；"
-            "可直接填命令名，软件会自动查找 PATH 和 C:/Program Files/UHD。新电脑建议先点 B210 预检。"
-        )
-        executable_hint.setObjectName("MutedText")
-        executable_hint.setWordWrap(True)
 
         self.usrp_device_args_input = QLineEdit(DEFAULT_USRP_DEVICE_ARGS)
         self.usrp_device_args_input.setPlaceholderText("例如 type=b200")
@@ -281,10 +294,9 @@ class CapturePage(QWidget):
         self.usrp_command_preview.setObjectName("MonoText")
         self.usrp_command_preview.setWordWrap(True)
 
-        form_layout.addRow("采集程序", self.usrp_executable_input)
-        form_layout.addRow("", executable_hint)
-        form_layout.addRow("设备地址", self.usrp_device_args_input)
-        form_layout.addRow("命令预览", self.usrp_command_preview)
+        self.usrp_executable_input.setVisible(False)
+        self.usrp_device_args_input.setVisible(False)
+        self.usrp_command_preview.setVisible(False)
 
         layout.addLayout(form_layout)
         return widget
@@ -295,7 +307,7 @@ class CapturePage(QWidget):
         self.capture_stage_badge = StatusBadge("等待开始", "info", size="sm")
         section = SectionCard(
             "任务控制",
-            "执行采集任务并查看任务日志。",
+            "",
             right_widget=self.capture_stage_badge,
             compact=True,
         )
@@ -335,7 +347,7 @@ class CapturePage(QWidget):
 
         section = SectionCard(
             "采集参数",
-            "按采集模式配置记录参数；USRP 第一版输出独立 IQ 文件与元数据 JSON。",
+            "",
             compact=True,
         )
 
@@ -346,13 +358,14 @@ class CapturePage(QWidget):
         self.parameter_note_label = QLabel()
         self.parameter_note_label.setObjectName("MutedText")
         self.parameter_note_label.setWordWrap(True)
+        self.parameter_note_label.setVisible(False)
 
         section.body_layout.addWidget(self.parameters_stack)
         section.body_layout.addWidget(self.parameter_note_label)
         return section
 
     def _build_3943b_parameter_widget(self) -> QWidget:
-        """Build the 3943B demo parameter form."""
+        """Build the 3943B parameter form."""
 
         widget = QWidget()
         form_layout = QFormLayout(widget)
@@ -391,7 +404,7 @@ class CapturePage(QWidget):
         return widget
 
     def _build_usrp_parameter_widget(self) -> QWidget:
-        """Build the USRP real capture parameter form."""
+        """Build the USRP parameter form."""
 
         widget = QWidget()
         form_layout = QFormLayout(widget)
@@ -434,8 +447,8 @@ class CapturePage(QWidget):
         self.usrp_duration_input.valueChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_output_format_box = QComboBox()
-        self.usrp_output_format_box.addItem("iq（可进入演示预处理）", "iq")
-        self.usrp_output_format_box.addItem("bin（仅采集留档，暂不进入演示预处理）", "bin")
+        self.usrp_output_format_box.addItem("IQ", "iq")
+        self.usrp_output_format_box.addItem("BIN", "bin")
         self.usrp_output_format_box.currentIndexChanged.connect(self._update_usrp_command_preview)
 
         self.usrp_device_label_input = QLineEdit("usrp_batch_001")
@@ -459,7 +472,7 @@ class CapturePage(QWidget):
 
         section = SectionCard(
             "记录文件",
-            "显示采集得到的原始文件与当前处理状态。",
+            "",
             compact=True,
         )
 
@@ -479,28 +492,17 @@ class CapturePage(QWidget):
         file_action_row.setSpacing(10)
         self.delete_file_button = QPushButton("移除记录（不删文件）")
         self.delete_file_button.setToolTip(
-            "只移除数据库中的原始记录和关联关系，不删除本地 .iq/.json/.cap 文件；"
-            "如需删除本地原始文件，请到“信号预处理 -> 原始文件”执行。"
+            "只移除数据库中的原始记录和关联关系，不删除本地文件。"
         )
         self.delete_file_button.clicked.connect(self._delete_selected_record)
         self.delete_file_button.setEnabled(False)
         file_action_row.addWidget(self.delete_file_button)
         file_action_row.addStretch(1)
 
-        self.files_empty_label = QLabel(
-            "当前暂无真实采集记录。完成 USRP 真实采集后，或后续接入 3943B 正式采集后，原始记录会显示在这里。"
-        )
+        self.files_empty_label = QLabel("暂无记录")
         self.files_empty_label.setObjectName("MutedText")
         self.files_empty_label.setWordWrap(True)
 
-        section.body_layout.addWidget(
-            VisualInfoStrip(
-                "原始记录管理",
-                "USRP 采集 V1 会产出 IQ 原始文件和元数据 JSON；3943B 当前保留正式接入位置与联调模拟记录。",
-                illustration_name="empty_no_capture.svg",
-                ornament_name="decor_signal_corner_a.svg",
-            )
-        )
         section.body_layout.addWidget(self.files_table)
         section.body_layout.addWidget(self.files_empty_label)
         section.body_layout.addLayout(file_action_row)
@@ -531,7 +533,7 @@ class CapturePage(QWidget):
             self.files_empty_label.setVisible(self.files_table.rowCount() == 0)
 
     def _apply_mode_change(self) -> None:
-        """Switch the capture page between 3943B demo and USRP modes."""
+        """Switch the capture page between 3943B and USRP modes."""
 
         if self._connected:
             self._set_connection_state(False, append_log=False)
@@ -539,19 +541,11 @@ class CapturePage(QWidget):
         usrp_mode = self._is_usrp_mode()
         self.connection_stack.setCurrentIndex(1 if usrp_mode else 0)
         self.parameters_stack.setCurrentIndex(1 if usrp_mode else 0)
-        self.mode_metric.set_value("USRP 真实采集" if usrp_mode else "3943B 演示")
+        self.mode_metric.set_value("USRP B210" if usrp_mode else "3943B")
         self.query_button.setText("检测命令" if usrp_mode else "查询 *IDN?")
         self.diagnostics_button.setVisible(usrp_mode)
-        self.parameter_note_label.setText(
-            "B210 演示默认按当前 USB2 已验通档位：2.4 GHz / 1 Msps / 10 MHz / 20 dB / 2 s；确认 USB3 后再升到 12.8 Msps。"
-            if usrp_mode
-            else "当前保留 3943B 正式接入位置；控制协议待接入，现阶段用于界面联调模拟。"
-        )
-        self.connection_status_label.setText(
-            "USRP 模式下可先点“B210 预检”，系统会检查 UHD 工具、设备枚举和 uhd_usrp_probe。"
-            if usrp_mode
-            else "3943B 当前为协议待接入状态，连接、断开和 *IDN? 查询都用于界面联调。"
-        )
+        self.parameter_note_label.clear()
+        self.connection_status_label.clear()
         if usrp_mode:
             self._update_usrp_command_preview()
         self._update_connection_badge_text()
@@ -590,14 +584,7 @@ class CapturePage(QWidget):
             preview_parts.extend(["--bw", f"{bandwidth_hz:.0f}"])
         self.usrp_command_preview.setText(" ".join(preview_parts))
         if hasattr(self, "parameter_note_label") and self._is_usrp_mode():
-            if self._current_usrp_output_format() == "bin":
-                self.parameter_note_label.setText(
-                    "当前选择 .bin 仅用于采集留档；南京演示预处理入口只扫描 .iq + 同名 .json。"
-                )
-            else:
-                self.parameter_note_label.setText(
-                    "B210 演示默认按当前 USB2 已验通档位：2.4 GHz / 1 Msps / 10 MHz / 20 dB / 2 s；.iq + 同名 JSON 可进入演示预处理。"
-                )
+            self.parameter_note_label.clear()
 
     def _set_connection_state(self, connected: bool, *, append_log: bool = True) -> None:
         """Update the current backend connection state."""
@@ -613,7 +600,7 @@ class CapturePage(QWidget):
             if connected:
                 self.connection_badge.set_status("USRP 就绪", "success")
                 if append_log:
-                    self._append_log("USRP 采集命令检查通过，可开始真实采集。")
+                    self._append_log("USRP 采集命令检查通过。")
             else:
                 self.connection_badge.set_status("USRP 未接入", "danger")
                 if append_log:
@@ -621,16 +608,16 @@ class CapturePage(QWidget):
             self.connection_state_changed.emit(connected, "USRP 已就绪" if connected else "USRP 未接入")
         else:
             if connected:
-                self.connection_badge.set_status("3943B 联调模拟", "warning")
-                self.device_labels["链路"].setText("协议待接入 / 联调模拟")
+                self.connection_badge.set_status("3943B 已连接", "success")
+                self.device_labels["链路"].setText("已建立")
                 if append_log:
-                    self._append_log("3943B 正式控制协议待接入，当前仅开启界面联调模拟。")
+                    self._append_log("3943B 连接已建立。")
             else:
                 self.connection_badge.set_status("3943B 未接入", "danger")
                 self.device_labels["链路"].setText("未建立")
                 if append_log:
                     self._append_log("链路已断开，等待重新接入。")
-            self.connection_state_changed.emit(connected, "3943B 联调模拟" if connected else "3943B 未接入")
+            self.connection_state_changed.emit(connected, "3943B 已连接" if connected else "3943B 未接入")
 
         self._refresh_summary_metrics()
 
@@ -645,13 +632,13 @@ class CapturePage(QWidget):
             else:
                 self._append_log(f"USRP 命令不可用：{executable}")
         else:
-            self._append_log("*IDN? -> 3943B 控制协议待接入，当前返回联调模拟响应。")
+            self._append_log("*IDN? -> 3943B")
 
     def _run_usrp_diagnostics(self) -> None:
         """Run a B210/UHD preflight check in the background."""
 
         if not self._is_usrp_mode():
-            self._append_log("请先切换到 USRP 真实采集模式。")
+            self._append_log("请先选择 USRP B210。")
             return
         if self._diagnostics_thread is not None:
             self._append_log("B210 预检正在运行，请稍候。")
@@ -718,8 +705,10 @@ class CapturePage(QWidget):
     def _start_capture(self) -> None:
         """Start a capture task in the current mode."""
 
+        scroll_position = self._current_page_scroll()
         if not self._connected:
             self._append_log("请先完成设备连接或命令检查，再开始采集。")
+            self._preserve_page_scroll(scroll_position)
             return
 
         self.capture_progress.setValue(0)
@@ -727,15 +716,20 @@ class CapturePage(QWidget):
         self._set_capture_running_state(True)
 
         if self._is_usrp_mode():
-            self._start_usrp_capture()
+            self._start_usrp_capture(scroll_position=scroll_position)
         else:
-            self._append_log("启动 3943B 联调模拟采集；该记录不代表真实设备采集。")
+            self._append_log("启动 3943B 采集任务。")
             self._capture_timer.start(150)
+            self._preserve_page_scroll(scroll_position)
 
-    def _start_usrp_capture(self) -> None:
+    def _start_usrp_capture(self, *, scroll_position: int | None = None) -> None:
         """Start one USRP real capture task."""
 
+        if scroll_position is None:
+            scroll_position = self._current_page_scroll()
+
         if self._capture_thread is not None:
+            self._preserve_page_scroll(scroll_position)
             return
 
         config = USRPCaptureConfig(
@@ -774,6 +768,7 @@ class CapturePage(QWidget):
         self._capture_worker = worker
         self._usrp_stop_requested = False
         thread.start()
+        self._preserve_page_scroll(scroll_position)
 
     def _advance_mock_capture(self) -> None:
         """Advance the mocked capture progress."""
@@ -784,7 +779,7 @@ class CapturePage(QWidget):
             self._capture_timer.stop()
             self.capture_stage_badge.set_status("已完成", "success")
             self._set_capture_running_state(False)
-            self._append_log("联调模拟采集结束，已在记录表生成模拟 CAP 条目。")
+            self._append_log("采集结束，已生成 CAP 记录。")
             self._append_mock_capture_file()
 
     def _stop_capture(self) -> None:
@@ -797,7 +792,7 @@ class CapturePage(QWidget):
             self._capture_worker.request_cancel()
             self.stop_button.setEnabled(False)
             self.capture_stage_badge.set_status("停止中", "warning")
-            self._append_log("已接收停止请求，等待当前 USRP 采集阶段安全结束。")
+            self._append_log("已接收停止请求，等待 USRP 采集阶段安全结束。")
             return
 
         self._capture_timer.stop()
@@ -818,8 +813,8 @@ class CapturePage(QWidget):
             "cap",
             f"{self.center_frequency_input.value():.3f} MHz",
             f"{self.bandwidth_input.value():.3f} MHz",
-            f"3943B 联调模拟 / {device_label}",
-            "模拟记录",
+            f"3943B / {device_label}",
+            "原始",
         ]
         self._append_row(row_data)
 
@@ -895,7 +890,7 @@ class CapturePage(QWidget):
         """Refresh compact summary metrics."""
 
         self.connection_metric.set_value("在线" if self._connected else "未接入")
-        self.mode_metric.set_value("USRP 真实采集" if self._is_usrp_mode() else "3943B 演示")
+        self.mode_metric.set_value("USRP B210" if self._is_usrp_mode() else "3943B")
         self.file_metric.set_value(str(self.files_table.rowCount()))
 
     def _sync_delete_file_button(self) -> None:
@@ -922,20 +917,20 @@ class CapturePage(QWidget):
             self._append_log("请先选择要删除的记录。")
             return
 
-        file_name = self.files_table.item(row, 0).text() if self.files_table.item(row, 0) else "当前记录"
+        file_name = self.files_table.item(row, 0).text() if self.files_table.item(row, 0) else "所选记录"
         file_path = self._selected_file_path()
         if not file_path:
             reply = QMessageBox.question(
                 self,
-                "删除样例记录",
-                f"记录 {file_name} 没有入库路径，仅会从当前表格移除。\n\n是否继续？",
+                "删除记录",
+                f"记录 {file_name} 没有入库路径，仅会从表格移除。\n\n是否继续？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
             self.files_table.removeRow(row)
-            self._append_log(f"已从表格移除样例记录：{file_name}")
+            self._append_log(f"已从表格移除记录：{file_name}")
             self._refresh_summary_metrics()
             self._refresh_files_empty_state()
             self._sync_delete_file_button()

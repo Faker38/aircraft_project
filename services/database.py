@@ -32,9 +32,9 @@ DB_PATH = DB_DIR / "aircraft_project.sqlite3"
 DATASET_SPLIT_RANDOM_SEED = 42
 
 DEFAULT_LABEL_MAPPINGS: tuple[LabelMappingRecord, ...] = (
-    LabelMappingRecord("usrp_2412M", "频点A", "", "USRP 演示频点 2412 MHz"),
-    LabelMappingRecord("usrp_2437M", "频点B", "", "USRP 演示频点 2437 MHz"),
-    LabelMappingRecord("usrp_2462M", "频点C", "", "USRP 演示频点 2462 MHz"),
+    LabelMappingRecord("usrp_2412M", "频点A", "", "USRP 频点 2412 MHz"),
+    LabelMappingRecord("usrp_2437M", "频点B", "", "USRP 频点 2437 MHz"),
+    LabelMappingRecord("usrp_2462M", "频点C", "", "USRP 频点 2462 MHz"),
 )
 
 USRP_AUTO_MAPPING_NOTE_PREFIX = "USRP 自动映射"
@@ -232,7 +232,7 @@ def upsert_samples(records: list[SampleRecord]) -> None:
 
 
 def save_usrp_preprocess_result(result: Any) -> None:
-    """保存一次 USRP IQ 演示预处理任务及其样本记录。"""
+    """保存一次 USRP IQ 预处理任务及其样本记录。"""
 
     init_database()
     now = _now_text()
@@ -247,7 +247,7 @@ def save_usrp_preprocess_result(result: Any) -> None:
             now=now,
         )
         params_payload = {
-            "mode": "usrp_demo_preprocess",
+            "mode": "usrp_iq_preprocess",
             "metadata_path": str(input_info.metadata_path),
             "gain_db": float(input_info.gain_db),
             "duration_s": float(input_info.duration_s),
@@ -865,6 +865,7 @@ def write_dataset_manifest(version_id: str) -> Path | None:
         "label_counts": detail.version.label_counts,
         "split_random_seed": DATASET_SPLIT_RANDOM_SEED,
         "split_summary": _build_manifest_split_summary(detail.items),
+        "npz_files": sorted(str(path) for path in manifest_path.parent.glob("*.npz")),
         "missing_file_count": detail.missing_file_count,
         "empty_label_count": detail.empty_label_count,
         "items": [
@@ -1341,7 +1342,7 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
 
 
 def _seed_default_label_mappings(conn: sqlite3.Connection) -> None:
-    """首次初始化时写入 USRP 演示频点映射。"""
+    """首次初始化时写入 USRP 频点映射。"""
 
     seeded = conn.execute(
         "SELECT value FROM app_settings WHERE key = 'default_label_mappings_seeded'"

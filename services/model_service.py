@@ -62,13 +62,13 @@ def train_type_model(
     if detail is None:
         raise ModelServiceError(f"未找到数据集版本：{version_id}")
     if detail.version.task_type != "类型识别":
-        raise ModelServiceError("当前只支持类型识别真实训练，请选择“类型识别”数据集版本。")
+        raise ModelServiceError("请选择“类型识别”数据集版本。")
     if not detail.items:
-        raise ModelServiceError("当前数据集版本没有可训练样本。")
+        raise ModelServiceError("数据集版本没有可训练样本。")
     if detail.missing_file_count:
-        raise ModelServiceError(f"当前版本有 {detail.missing_file_count} 个样本文件不存在，请先修正样本路径。")
+        raise ModelServiceError(f"版本中有 {detail.missing_file_count} 个样本文件不存在，请先修正样本路径。")
     if detail.empty_label_count:
-        raise ModelServiceError(f"当前版本有 {detail.empty_label_count} 条样本标签为空，请先回到数据集页补齐。")
+        raise ModelServiceError(f"版本中有 {detail.empty_label_count} 条样本标签为空，请先回到数据集页补齐。")
 
     _emit_train_progress(
         progress_callback,
@@ -96,7 +96,7 @@ def train_type_model(
     split_counts = Counter(item.split for item in detail.items)
     for split_name in ("train", "val", "test"):
         if split_counts.get(split_name, 0) <= 0:
-            raise ModelServiceError(f"当前版本缺少 {split_name} 集样本，请先调整数据集划分。")
+            raise ModelServiceError(f"版本缺少 {split_name} 集样本，请先调整数据集划分。")
 
     training_domain = _build_training_domain(detail.items)
     logs = [
@@ -108,7 +108,7 @@ def train_type_model(
         f"中心频率={_format_range(training_domain.get('center_frequency_hz_range'))} Hz / "
         f"采样率={_format_range(training_domain.get('sample_rate_hz_range'))} Hz",
         f"[Info] 训练参数: random_state={int(random_state)} / n_estimators={int(n_estimators)} / max_depth={_format_max_depth(max_depth)}",
-        "[Info] 当前训练为可复现实验：相同版本、参数与随机种子下，结果稳定重复是预期行为。",
+        "[Info] 相同版本、参数与随机种子下，训练结果可重复。",
     ]
 
     split_features: dict[str, list[np.ndarray]] = {"train": [], "val": [], "test": []}
@@ -151,12 +151,12 @@ def train_type_model(
         n_estimators=int(n_estimators),
         max_depth=resolved_max_depth,
         random_state=int(random_state),
-        # 演示环境优先稳定性，固定单进程，避免 Windows 下 joblib 并行权限问题。
+        # 固定单进程，避免 Windows 下 joblib 并行权限问题。
         n_jobs=1,
         class_weight="balanced_subsample",
     )
     clf.fit(x_train, y_train)
-    _raise_if_cancelled(cancel_check, "训练已停止：随机森林拟合已完成，当前结果不会保存。")
+    _raise_if_cancelled(cancel_check, "训练已停止：随机森林拟合已完成，结果不会保存。")
 
     _emit_train_progress(
         progress_callback,
@@ -259,7 +259,7 @@ def train_type_model(
         for path in (model_path, metadata_path):
             if path.exists():
                 path.unlink()
-        raise TrainingCancelled("训练已停止：模型文件写入后收到取消请求，当前产物已丢弃。")
+        raise TrainingCancelled("训练已停止：模型文件写入后收到取消请求，产物已丢弃。")
 
     model_record = TrainedModelRecord(
         model_id=model_id,
@@ -469,7 +469,7 @@ def _ensure_complex_iq(raw: np.ndarray) -> np.ndarray:
     if np.iscomplexobj(flat):
         return flat.astype(np.complex128, copy=False)
     if flat.size % 2 != 0:
-        raise ModelServiceError("当前样本不是合法的复数 IQ 序列。")
+        raise ModelServiceError("样本不是合法的复数 IQ 序列。")
     real = flat[0::2].astype(np.float64, copy=False)
     imag = flat[1::2].astype(np.float64, copy=False)
     return real + 1j * imag

@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -38,6 +39,8 @@ from services import (
     delete_sample,
     delete_samples_by_device,
     init_database,
+    import_external_dataset_directory,
+    ExternalDatasetImportError,
     list_dataset_versions,
     list_label_mappings,
     list_orphan_local_paths,
@@ -96,7 +99,7 @@ class DatasetPage(QWidget):
         self.sample_metric = MetricCard("已处理样本", "0", accent_color="#7CB98B", compact=True)
         self.pending_metric = MetricCard("待标注", "0", accent_color="#C59A63", compact=True)
         current_version = self.dataset_versions[-1].version_id if self.dataset_versions else "未生成"
-        self.version_metric = MetricCard("当前版本", current_version, accent_color="#5EA6D3", compact=True)
+        self.version_metric = MetricCard("数据集", current_version, accent_color="#5EA6D3", compact=True)
         metrics_row.addWidget(self.mapping_metric)
         metrics_row.addWidget(self.sample_metric)
         metrics_row.addWidget(self.pending_metric)
@@ -118,7 +121,9 @@ class DatasetPage(QWidget):
         content_layout.addLayout(bottom_row)
 
         content_layout.addWidget(self._build_history_card())
-        content_layout.addWidget(self._build_danger_zone_card())
+        self.maintenance_card = self._build_danger_zone_card()
+        self.maintenance_card.setVisible(False)
+        content_layout.addWidget(self.maintenance_card)
         content_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -182,8 +187,7 @@ class DatasetPage(QWidget):
 
         section = SectionCard(
             "已处理样本",
-            "本页只围绕预处理输出样本展开，按“样本复核 -> 标签确认 -> 生成数据集”推进。",
-            right_widget=StatusBadge("主流程", "info", size="sm"),
+            "",
             compact=True,
         )
 
@@ -195,19 +199,14 @@ class DatasetPage(QWidget):
         self.processed_value.setObjectName("ValueLabel")
         self.ready_value = QLabel(str(sum(1 for record in self.sample_records if record.status == "已标注")))
         self.ready_value.setObjectName("ValueLabel")
-        next_step_value = QLabel("标签确认 -> 数据集生成")
+        next_step_value = QLabel("数据集生成")
         next_step_value.setObjectName("ValueLabel")
 
-        info_layout.addRow("当前样本数", self.processed_value)
+        info_layout.addRow("样本数", self.processed_value)
         info_layout.addRow("已标注样本", self.ready_value)
-        info_layout.addRow("当前下一步", next_step_value)
-
-        hint_label = QLabel("当前样本统一来自预处理输出，建议按来源批次完成标签确认，再生成类型识别数据集版本。")
-        hint_label.setObjectName("MutedText")
-        hint_label.setWordWrap(True)
+        info_layout.addRow("下一步", next_step_value)
 
         section.body_layout.addLayout(info_layout)
-        section.body_layout.addWidget(hint_label)
         return section
 
     def _build_mapping_card(self) -> SectionCard:
@@ -215,7 +214,7 @@ class DatasetPage(QWidget):
 
         section = SectionCard(
             "编号映射",
-            "人工只需维护 设备编号 -> 类型标签 -> 个体标签 的对应关系。",
+            "",
             right_widget=StatusBadge("可编辑", "info", size="sm"),
             compact=True,
         )
@@ -278,7 +277,7 @@ class DatasetPage(QWidget):
         button_row.addWidget(self.mapping_delete_button)
         button_row.addStretch(1)
 
-        self.mapping_status_label = QLabel("维护好映射表后，预处理输出样本可按设备编号或 USRP 频点批次自动回填标签。")
+        self.mapping_status_label = QLabel("")
         self.mapping_status_label.setObjectName("MutedText")
         self.mapping_status_label.setWordWrap(True)
 
@@ -307,7 +306,7 @@ class DatasetPage(QWidget):
     def _build_sample_label_card(self) -> SectionCard:
         """Create the sample annotation card."""
 
-        section = SectionCard("样本标注", "围绕已处理样本完成标签确认与人工复核。", compact=True)
+        section = SectionCard("样本标注", "", compact=True)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(12)
@@ -322,9 +321,10 @@ class DatasetPage(QWidget):
         mode_row.addWidget(self.individual_radio)
         mode_row.addStretch(1)
 
-        mode_hint = QLabel("预处理输出样本建议先维护映射，再执行自动标注；人工标注用于复核和修正。")
+        mode_hint = QLabel("")
         mode_hint.setObjectName("MutedText")
         mode_hint.setWordWrap(True)
+        mode_hint.setVisible(False)
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(10)
@@ -336,7 +336,7 @@ class DatasetPage(QWidget):
         self.status_filter.addItems(["全部状态", "待标注", "已标注", "已排除"])
         self.status_filter.currentIndexChanged.connect(self._apply_filters)
 
-        self.delete_device_samples_button = QPushButton("删除当前设备样本")
+        self.delete_device_samples_button = QPushButton("删除设备样本")
         self.delete_device_samples_button.setObjectName("DangerButton")
         self.delete_device_samples_button.clicked.connect(self._delete_current_device_samples)
 
@@ -350,7 +350,7 @@ class DatasetPage(QWidget):
         self.sample_table = QTableWidget(0, 11)
         self.sample_table.setHorizontalHeaderLabels(
             [
-                "样本 ID",
+                "文件 ID",
                 "来源类型",
                 "来源文件",
                 "设备编号",
@@ -359,7 +359,7 @@ class DatasetPage(QWidget):
                 "模型分数",
                 "类型标签",
                 "个体标签",
-                "纳入候选",
+                "纳入数据集",
                 "状态",
             ]
         )
@@ -386,9 +386,10 @@ class DatasetPage(QWidget):
         review_title = QLabel("复核区")
         review_title.setObjectName("SectionTitle")
 
-        review_hint = QLabel("点击样本行后，在这里填写标签或排除样本。只有已标注、标签非空且纳入候选的样本会进入版本生成；未标注样本即使勾选也不会进入数据集。")
+        review_hint = QLabel("")
         review_hint.setObjectName("MutedText")
         review_hint.setWordWrap(True)
+        review_hint.setVisible(False)
 
         review_layout = QFormLayout()
         review_layout.setHorizontalSpacing(12)
@@ -404,20 +405,21 @@ class DatasetPage(QWidget):
         self.review_status_box = QComboBox()
         self.review_status_box.addItems(["待标注", "已标注", "已排除"])
         self.review_status_box.currentTextChanged.connect(self._on_review_status_changed)
-        self.review_include_checkbox = QCheckBox("纳入候选")
+        self.review_include_checkbox = QCheckBox("纳入数据集")
         self.review_include_checkbox.setChecked(True)
         self.review_include_checkbox.toggled.connect(self._on_include_toggled)
         self.review_type_input.setPlaceholderText("输入类型标签")
         self.review_individual_input.setPlaceholderText("输入个体标签")
 
-        review_layout.addRow("样本 ID", self.review_sample_value)
+        review_layout.addRow("文件 ID", self.review_sample_value)
         review_layout.addRow("设备编号", self.review_device_value)
         review_layout.addRow("类型标签", self.review_type_input)
         review_layout.addRow("个体标签", self.review_individual_input)
         review_layout.addRow("数据集候选", self.review_include_checkbox)
-        include_hint = QLabel("勾选表示标注完成后允许进入数据集；未标注样本不会被生成版本。")
+        include_hint = QLabel("")
         include_hint.setObjectName("MutedText")
         include_hint.setWordWrap(True)
+        include_hint.setVisible(False)
         review_layout.addRow("", include_hint)
         review_layout.addRow("状态", self.review_status_box)
 
@@ -444,7 +446,7 @@ class DatasetPage(QWidget):
         self.auto_label_progress.setValue(0)
         self.auto_label_progress.setFormat("等待自动标注")
 
-        self.annotation_status_label = QLabel("当前模式：类型识别。自动标注按映射表回填；映射为空时会清空标签并标记为待标注。")
+        self.annotation_status_label = QLabel("")
         self.annotation_status_label.setObjectName("MutedText")
         self.annotation_status_label.setWordWrap(True)
 
@@ -465,8 +467,7 @@ class DatasetPage(QWidget):
 
         section = SectionCard(
             "数据集生成",
-            "根据当前已处理样本生成数据集版本，并衔接训练与识别模块。",
-            right_widget=StatusBadge("版本管理", "info", size="sm"),
+            "",
             compact=True,
         )
 
@@ -506,17 +507,27 @@ class DatasetPage(QWidget):
         self.strategy_box.currentIndexChanged.connect(self._refresh_dataset_generation_controls)
         self.dataset_type_radio.toggled.connect(self._refresh_dataset_generation_controls)
         self.dataset_individual_radio.toggled.connect(self._refresh_dataset_generation_controls)
+        self.npz_limit_input = QSpinBox()
+        self.npz_limit_input.setRange(1, 100000)
+        self.npz_limit_input.setValue(1000)
 
         form_layout.addRow("训练集", self.train_ratio)
         form_layout.addRow("验证集", self.val_ratio)
         form_layout.addRow("测试集", self.test_ratio)
         form_layout.addRow("划分策略", self.strategy_box)
+        form_layout.addRow("单包上限", self.npz_limit_input)
 
         action_row = QHBoxLayout()
         self.generate_button = QPushButton("生成数据集")
         self.generate_button.setObjectName("PrimaryButton")
         self.generate_button.clicked.connect(self._generate_dataset_version)
+        self.generate_test_button = QPushButton("生成测试集")
+        self.generate_test_button.clicked.connect(self._generate_test_dataset_version)
+        self.import_external_button = QPushButton("导入数据集")
+        self.import_external_button.clicked.connect(self._import_external_dataset_directory)
         action_row.addWidget(self.generate_button)
+        action_row.addWidget(self.generate_test_button)
+        action_row.addWidget(self.import_external_button)
         action_row.addStretch(1)
 
         self.dataset_build_progress = QProgressBar()
@@ -524,7 +535,7 @@ class DatasetPage(QWidget):
         self.dataset_build_progress.setValue(0)
         self.dataset_build_progress.setFormat("等待生成数据集")
 
-        self.dataset_build_status_label = QLabel("训练集、验证集、测试集比例总和必须等于 100%，才能生成数据集版本。")
+        self.dataset_build_status_label = QLabel("")
         self.dataset_build_status_label.setObjectName("MutedText")
         self.dataset_build_status_label.setWordWrap(True)
 
@@ -538,7 +549,7 @@ class DatasetPage(QWidget):
     def _build_dataset_result_card(self) -> SectionCard:
         """Create the dataset split preview card."""
 
-        section = SectionCard("划分结果", "显示当前版本的类别或个体样本数。", compact=True)
+        section = SectionCard("划分结果", "", compact=True)
         self.result_table = QTableWidget(0, 4)
         self.result_table.setHorizontalHeaderLabels(["类别 / 个体", "训练集", "验证集", "测试集"])
         self.result_table.horizontalHeader().setStretchLastSection(True)
@@ -551,9 +562,9 @@ class DatasetPage(QWidget):
     def _build_history_card(self) -> SectionCard:
         """Create the dataset version history card."""
 
-        section = SectionCard("历史版本", "显示已生成数据集与来源。", compact=True)
+        section = SectionCard("数据集", "", compact=True)
         self.history_table = QTableWidget(0, 6)
-        self.history_table.setHorizontalHeaderLabels(["版本号", "任务类型", "训练样本", "策略", "来源", "创建时间"])
+        self.history_table.setHorizontalHeaderLabels(["数据集 ID", "任务类型", "样本数", "策略", "来源", "创建时间"])
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setAlternatingRowColors(True)
@@ -572,31 +583,24 @@ class DatasetPage(QWidget):
         return section
 
     def _build_danger_zone_card(self) -> SectionCard:
-        """创建数据库危险操作区。"""
+        """创建数据库维护操作区。"""
 
         section = SectionCard(
-            "危险操作",
-            "仅用于联调清理：清空原始记录、预处理样本、数据集版本和模型记录，不删除本地文件。",
-            right_widget=StatusBadge("谨慎使用", "danger", size="sm"),
+            "数据维护",
+            "",
             compact=True,
         )
 
-        warning_label = QLabel(
-            "清空后采集、预处理、训练和识别页会失去当前数据库记录；本地 .iq、.json、.npy、.cap、manifest 和模型文件不会被删除。"
-        )
+        warning_label = QLabel("")
         warning_label.setObjectName("MutedText")
         warning_label.setWordWrap(True)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self.clear_database_button = QPushButton("清空样本数据库")
+        self.clear_database_button = QPushButton("重置数据库")
         self.clear_database_button.setObjectName("DangerButton")
         self.clear_database_button.clicked.connect(self._clear_processed_dataset_database)
-        self.orphan_cleanup_button = QPushButton("清理孤立文件")
-        self.orphan_cleanup_button.setToolTip(
-            "只扫描 data/raw、data/samples、data/datasets、data/models 中数据库无引用的文件或目录；"
-            "默认先预览，确认后才删除本地文件。"
-        )
+        self.orphan_cleanup_button = QPushButton("清理文件")
         self.orphan_cleanup_button.clicked.connect(self._preview_orphan_local_files)
         action_row.addWidget(self.clear_database_button)
         action_row.addWidget(self.orphan_cleanup_button)
@@ -887,10 +891,10 @@ class DatasetPage(QWidget):
 
         if self.individual_radio.isChecked():
             self.review_individual_input.setEnabled(True)
-            self.annotation_status_label.setText("当前模式：个体识别。自动标注会同时回填类型标签和个体标签。")
+            self.annotation_status_label.setText("个体识别")
         else:
             self.review_individual_input.setEnabled(False)
-            self.annotation_status_label.setText("当前模式：类型识别。自动标注会优先回填类型标签。")
+            self.annotation_status_label.setText("类型识别")
 
         self._apply_filters()
         self._sync_review_form_from_selection()
@@ -902,7 +906,7 @@ class DatasetPage(QWidget):
             return
 
         if not self.sample_records:
-            self.annotation_status_label.setText("当前没有可自动标注的样本，请先从预处理结果同步样本。")
+            self.annotation_status_label.setText("没有可标注样本。")
             return
 
         mapping_lookup = self._build_mapping_lookup()
@@ -1017,6 +1021,10 @@ class DatasetPage(QWidget):
         self.generate_button.setEnabled(
             not running and self._split_ratio_total() == 100 and self._has_dataset_candidates_for_current_mode()
         )
+        if hasattr(self, "generate_test_button"):
+            self.generate_test_button.setEnabled(not running and self._has_dataset_candidates_for_current_mode())
+        if hasattr(self, "import_external_button"):
+            self.import_external_button.setEnabled(not running and not self._is_dataset_building())
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
         self.orphan_cleanup_button.setEnabled(not running and not self._is_dataset_building())
@@ -1056,7 +1064,7 @@ class DatasetPage(QWidget):
         self._refresh_annotation_metrics()
         self._refresh_dataset_generation_controls(update_status=False)
         self.annotation_status_label.setText(
-            f"样本 {self.review_sample_value.text()} 的候选状态已更新：{'纳入候选' if include_in_dataset else '不纳入候选'}。"
+            f"样本 {self.review_sample_value.text()} 已更新：{'纳入数据集' if include_in_dataset else '不纳入数据集'}。"
         )
         self.sample_records_updated.emit(self.get_sample_records())
 
@@ -1071,7 +1079,7 @@ class DatasetPage(QWidget):
         sample_id = self._item_text(self.sample_table, row, self.SAMPLE_ID_COLUMN)
         sample_file = self._record_for_row(row).sample_file_name if self._record_for_row(row) else ""
         if not sample_id:
-            self.annotation_status_label.setText("当前样本记录无效，无法删除。")
+            self.annotation_status_label.setText("样本记录无效，无法删除。")
             return
 
         reply = QMessageBox.question(
@@ -1122,12 +1130,12 @@ class DatasetPage(QWidget):
 
         match_count = sum(1 for record in self.sample_records if record.device_id == device_id)
         if match_count <= 0:
-            self.annotation_status_label.setText(f"当前没有设备 {device_id} 的样本记录。")
+            self.annotation_status_label.setText(f"没有设备 {device_id} 的样本记录。")
             return
 
         reply = QMessageBox.question(
             self,
-            "确认删除当前设备样本",
+            "确认删除设备样本",
             f"确认从数据库删除设备 {device_id} 的全部 {match_count} 条样本记录？\n\n"
             "本操作会清理相关数据集关联并重算版本摘要，但不会删除本地 .npy 文件。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1155,7 +1163,7 @@ class DatasetPage(QWidget):
 
         version_id = self._item_text(self.history_table, row, 0)
         if not version_id:
-            self.dataset_build_status_label.setText("当前数据集版本记录无效，无法删除。")
+            self.dataset_build_status_label.setText("数据集记录无效，无法删除。")
             return
 
         reply = QMessageBox.question(
@@ -1179,11 +1187,11 @@ class DatasetPage(QWidget):
         self.dataset_versions_updated.emit(self.get_dataset_versions())
 
     def _clear_processed_dataset_database(self) -> None:
-        """清空联调数据库记录，保留本地文件。"""
+        """清空数据库记录，保留本地文件。"""
 
         reply = QMessageBox.warning(
             self,
-            "确认清空样本数据库",
+            "确认重置数据库",
             "该操作会清空数据库中的原始记录、预处理任务、样本记录、数据集版本、版本关联和模型记录。\n\n"
             "不会删除本地 .iq、.json、.npy、.cap、manifest 或模型文件。\n\n"
             "该操作不可撤销，请确认是否继续。",
@@ -1215,7 +1223,7 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self.version_metric.set_value("未生成")
-        self.annotation_status_label.setText("样本数据库已清空，请重新从采集和预处理结果同步样本。")
+        self.annotation_status_label.setText("数据库已重置。")
         self.dataset_build_status_label.setText(
             "已清空："
             f"原始记录 {counts.get('raw_files', 0)} 条，"
@@ -1255,7 +1263,7 @@ class DatasetPage(QWidget):
             f"发现 {len(orphan_records)} 项数据库无引用的本地文件或目录，合计约 {self._format_bytes(total_size)}。"
         )
         message.setInformativeText(
-            "当前只扫描项目运行数据目录：data/raw、data/samples、data/datasets、data/models。\n"
+            "扫描范围：data/raw、data/samples、data/datasets、data/models。\n"
             "默认不会删除；点击删除后才会清理本地文件，且不会修改数据库记录。"
         )
         message.setDetailedText(detail_text)
@@ -1373,9 +1381,7 @@ class DatasetPage(QWidget):
         self._apply_filters()
         self._sync_review_form_from_selection()
         self._refresh_dataset_generation_controls(update_status=False)
-        self.annotation_status_label.setText(
-            f"样本 {self.review_sample_value.text()} 已保存复核结果，当前状态：{review_status}。"
-        )
+        self.annotation_status_label.setText(f"样本 {self.review_sample_value.text()} 已保存：{review_status}。")
         self.sample_records_updated.emit(self.get_sample_records())
 
     def _sync_sample_record_from_row(self, row: int) -> None:
@@ -1483,9 +1489,7 @@ class DatasetPage(QWidget):
 
         total_ratio = self._split_ratio_total()
         if total_ratio != 100:
-            self.dataset_build_status_label.setText(
-                f"当前划分比例总和为 {total_ratio}%，必须等于 100% 才能生成数据集。"
-            )
+            self.dataset_build_status_label.setText(f"划分比例总和为 {total_ratio}%，必须等于 100%。")
             self._refresh_dataset_generation_controls(update_status=False)
             return
 
@@ -1493,9 +1497,7 @@ class DatasetPage(QWidget):
         label_counts, selected_sample_ids, _, _ = collect_dataset_candidates(self.sample_records, task_type=task_type)
 
         if not label_counts:
-            self.dataset_build_status_label.setText(
-                "当前没有可用样本，无法生成数据集版本。请确认样本已标注、标签非空且处于纳入候选。"
-            )
+            self.dataset_build_status_label.setText("没有可用样本，无法生成数据集。")
             return
 
         version_id = self._next_generated_version_id()
@@ -1508,6 +1510,7 @@ class DatasetPage(QWidget):
             train_ratio=self.train_ratio.value(),
             val_ratio=self.val_ratio.value(),
             test_ratio=self.test_ratio.value(),
+            max_items_per_npz=self.npz_limit_input.value(),
         )
         worker.moveToThread(thread)
 
@@ -1533,6 +1536,94 @@ class DatasetPage(QWidget):
         )
         thread.start()
 
+    def _generate_test_dataset_version(self) -> None:
+        """生成仅包含测试集的数据集。"""
+
+        self.train_ratio.blockSignals(True)
+        self.val_ratio.blockSignals(True)
+        self.test_ratio.blockSignals(True)
+        self.train_ratio.setValue(0)
+        self.val_ratio.setValue(0)
+        self.test_ratio.setValue(100)
+        self.train_ratio.blockSignals(False)
+        self.val_ratio.blockSignals(False)
+        self.test_ratio.blockSignals(False)
+        self._refresh_dataset_generation_controls(update_status=False)
+        self._generate_dataset_version()
+
+    def _import_external_dataset_directory(self) -> None:
+        """导入外部 NPZ/MAT 数据集目录。"""
+
+        if self._is_dataset_building() or self._is_auto_labeling():
+            return
+
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "选择外部数据集目录",
+            str(BASE_DIR.parent),
+        )
+        if not directory:
+            return
+
+        total_ratio = self._split_ratio_total()
+        if total_ratio != 100:
+            self.dataset_build_status_label.setText(f"划分比例总和为 {total_ratio}%，必须等于 100%。")
+            self._refresh_dataset_generation_controls(update_status=False)
+            return
+
+        version_id = self._next_generated_version_id()
+        task_type = "类型识别" if self.dataset_type_radio.isChecked() else "个体识别"
+        self._set_dataset_building_state(True)
+        self.dataset_build_progress.setRange(0, 0)
+        self.dataset_build_progress.setFormat("正在导入数据集")
+        self.dataset_build_status_label.setText(f"正在导入外部数据集 {version_id}。")
+        try:
+            result = import_external_dataset_directory(
+                directory,
+                version_id=version_id,
+                task_type=task_type,
+                train_ratio=self.train_ratio.value(),
+                val_ratio=self.val_ratio.value(),
+                test_ratio=self.test_ratio.value(),
+                max_items_per_npz=self.npz_limit_input.value(),
+            )
+        except ExternalDatasetImportError as exc:
+            self._set_dataset_building_state(False)
+            self.dataset_build_progress.setRange(0, 100)
+            self.dataset_build_progress.setValue(0)
+            self.dataset_build_progress.setFormat("导入失败")
+            self.dataset_build_status_label.setText(str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - UI 入口保护
+            self._set_dataset_building_state(False)
+            self.dataset_build_progress.setRange(0, 100)
+            self.dataset_build_progress.setValue(0)
+            self.dataset_build_progress.setFormat("导入失败")
+            self.dataset_build_status_label.setText(f"数据集导入失败：{exc}")
+            return
+
+        self.sample_records = list_samples()
+        self.dataset_versions = list_dataset_versions()
+        self.version_metric.set_value(result.version_record.version_id)
+        self._reload_mapping_table()
+        self._refresh_sample_table()
+        self._refresh_history_table()
+        self._sync_device_filter_options()
+        self._refresh_annotation_metrics()
+        self._apply_filters()
+        self._sync_review_form_from_selection()
+        self._set_dataset_building_state(False)
+        self.dataset_build_progress.setRange(0, max(result.sample_count, 1))
+        self.dataset_build_progress.setValue(result.sample_count)
+        self.dataset_build_progress.setFormat("数据集导入完成")
+        self.dataset_build_status_label.setText(
+            f"数据集 {result.version_record.version_id} 已导入："
+            f"{result.imported_file_count} 个文件，{result.sample_count} 条样本，"
+            f"{len(result.label_counts)} 个标签。"
+        )
+        self.sample_records_updated.emit(self.get_sample_records())
+        self.dataset_versions_updated.emit(self.get_dataset_versions())
+
     def _split_ratio_total(self) -> int:
         """Return the current train/val/test ratio total."""
 
@@ -1554,12 +1645,19 @@ class DatasetPage(QWidget):
             and not self._is_auto_labeling()
         )
         self.generate_button.setEnabled(can_generate)
+        if hasattr(self, "generate_test_button"):
+            self.generate_test_button.setEnabled(
+                bool(label_counts)
+                and not device_split_warning
+                and not self._is_dataset_building()
+                and not self._is_auto_labeling()
+            )
+        if hasattr(self, "import_external_button"):
+            self.import_external_button.setEnabled(not self._is_dataset_building() and not self._is_auto_labeling())
         if not is_valid:
             self.result_table.setRowCount(0)
             if update_status:
-                self.dataset_build_status_label.setText(
-                    f"当前划分比例总和为 {total_ratio}%，必须等于 100% 才能生成数据集。"
-                )
+                self.dataset_build_status_label.setText(f"划分比例总和为 {total_ratio}%，必须等于 100%。")
             return
 
         self._refresh_dataset_result_table(label_counts)
@@ -1567,14 +1665,14 @@ class DatasetPage(QWidget):
             return
         if not label_counts:
             self.dataset_build_status_label.setText(
-                "当前划分比例已满足 100%，但还没有可用样本。生成版本需要：已标注、标签非空、纳入候选。"
+                "没有可用样本。"
             )
             return
         if device_split_warning:
             self.dataset_build_status_label.setText(device_split_warning)
             return
         self.dataset_build_status_label.setText(
-            f"当前划分比例已满足 100%，可生成{task_type}数据集：共 {len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
+            f"可生成{task_type}数据集：{len(label_counts)} 个标签，{len(selected_sample_ids)} 条样本。"
         )
 
     def _calculate_split_counts(self, total: int) -> tuple[int, int, int]:
@@ -1647,7 +1745,7 @@ class DatasetPage(QWidget):
         self.dataset_build_progress.setRange(0, max(int(payload.get("sample_total", 0)), 1))
         self.dataset_build_progress.setValue(int(payload.get("sample_total", 0)))
         self.dataset_build_progress.setFormat("数据集生成完成")
-        detail_text = f"当前标签数 {len(label_counts)}。"
+        detail_text = f"标签数 {len(label_counts)}。"
         if record.task_type == "类型识别" and len(label_counts) > 1:
             detail_text = f"包含 {len(label_counts)} 个类型标签，可继续执行类型识别真实训练。"
         self.dataset_build_status_label.setText(
@@ -1681,12 +1779,22 @@ class DatasetPage(QWidget):
             and self._has_dataset_candidates_for_current_mode()
             and not device_split_warning
         )
+        if hasattr(self, "generate_test_button"):
+            self.generate_test_button.setEnabled(
+                not running
+                and not self._is_auto_labeling()
+                and self._has_dataset_candidates_for_current_mode()
+                and not device_split_warning
+            )
+        if hasattr(self, "import_external_button"):
+            self.import_external_button.setEnabled(not running and not self._is_auto_labeling())
         self.dataset_type_radio.setEnabled(not running)
         self.dataset_individual_radio.setEnabled(not running)
         self.train_ratio.setEnabled(not running)
         self.val_ratio.setEnabled(not running)
         self.test_ratio.setEnabled(not running)
         self.strategy_box.setEnabled(not running)
+        self.npz_limit_input.setEnabled(not running)
         self.delete_version_button.setEnabled(not running)
         self.clear_database_button.setEnabled(not running)
         self.orphan_cleanup_button.setEnabled(not running and not self._is_auto_labeling())
@@ -1724,6 +1832,6 @@ class DatasetPage(QWidget):
             if len(device_ids) < required_groups:
                 return (
                     f"按设备个体隔离需要每个标签至少 {required_groups} 个设备编号；"
-                    f"标签 {label_value} 当前只有 {len(device_ids)} 个。请补充设备样本，或改用按样本随机分层。"
+                    f"标签 {label_value} 只有 {len(device_ids)} 个设备。"
                 )
         return ""
