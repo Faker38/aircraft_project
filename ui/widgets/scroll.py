@@ -43,7 +43,12 @@ class _SmoothScrollController(QObject):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Animate wheel scrolling for the bound widget."""
 
-        if watched is self._scroll_area.viewport() and event.type() == QEvent.Type.Wheel:
+        try:
+            viewport = self._scroll_area.viewport()
+        except RuntimeError:
+            return False
+
+        if watched is viewport and event.type() == QEvent.Type.Wheel:
             wheel_event = event if isinstance(event, QWheelEvent) else None
             if wheel_event is None:
                 return super().eventFilter(watched, event)

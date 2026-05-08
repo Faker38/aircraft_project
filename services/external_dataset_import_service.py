@@ -74,7 +74,7 @@ def import_external_dataset_directory(
 
     source_files = _find_supported_source_files(source_dir)
     if not source_files:
-        raise ExternalDatasetImportError("目录中没有可导入的 .npz 或 .mat 文件。")
+        raise ExternalDatasetImportError("目录中没有可导入的 .npz 切片数据文件。")
 
     loaded_samples: list[_LoadedExternalSample] = []
     for path in source_files:
@@ -96,10 +96,7 @@ def import_external_dataset_directory(
     )
     records = _persist_external_samples(version_id, task_type, loaded_samples)
     sample_ids = [record.sample_id for record in records]
-    label_values = {
-        record.sample_id: (record.label_type if task_type == "类型识别" else record.label_individual)
-        for record in records
-    }
+    label_values = {record.sample_id: (record.label_type or record.label_individual) for record in records}
     label_counts: dict[str, int] = {}
     for sample_id in sample_ids:
         label = label_values[sample_id]
@@ -139,8 +136,11 @@ def import_external_dataset_directory(
 def _find_supported_source_files(source_dir: Path) -> list[Path]:
     """Return supported source files in stable order."""
 
+    npz_files = [*source_dir.rglob("*.npz")]
+    if not npz_files and any(source_dir.rglob("*.mat")):
+        raise ExternalDatasetImportError("MAT 原始数据需先经过预处理算法生成切片数据后再导入。")
     return sorted(
-        [*source_dir.rglob("*.npz"), *source_dir.rglob("*.mat")],
+        npz_files,
         key=lambda item: str(item.relative_to(source_dir)).lower(),
     )
 
@@ -412,12 +412,8 @@ def _persist_external_samples(
         sample_id = _sample_id_for(sample)
         output_path = output_dir / f"{sample_id}.npy"
         np.save(output_path, sample.matrix.astype(np.float32, copy=False))
-        if task_type == "个体识别":
-            label_type = _label_from_file_name(sample.source_path)
-            label_individual = sample.label
-        else:
-            label_type = sample.label
-            label_individual = sample.device_id
+        label_type = sample.label
+        label_individual = sample.label
         records.append(
             SampleRecord(
                 sample_id=sample_id,

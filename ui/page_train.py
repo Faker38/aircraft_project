@@ -227,6 +227,7 @@ class TrainPage(QWidget):
 
         box = QGroupBox("类型识别配置")
         form_layout = QFormLayout(box)
+        self.ml_form_layout = form_layout
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(12)
 
@@ -1260,7 +1261,7 @@ class TrainPage(QWidget):
         """检查当前数据集是否满足真实训练条件。"""
 
         if detail.version.task_type != "类型识别":
-            return "请选择类型识别数据集。"
+            return "请选择可训练的数据集。"
         if not detail.items:
             return "数据集没有样本清单。"
         if detail.missing_file_count:
@@ -1270,7 +1271,7 @@ class TrainPage(QWidget):
 
         label_counts = self._actual_label_counts(detail)
         if len(label_counts) < 2:
-            return "至少需要两类类型标签。"
+            return "至少需要两类标签。"
 
         split_counts = self._split_counts(detail)
         for split_name in ("train", "val", "test"):
@@ -1306,14 +1307,31 @@ class TrainPage(QWidget):
 
         is_three_stage = hasattr(self, "algorithm_box") and self.algorithm_box.currentText() == "ThreeStage"
         running = self._is_running() if hasattr(self, "_train_thread") else False
-        for widget in (self.n_estimators_spin, self.max_depth_spin, self.random_state_spin):
-            widget.setEnabled((not running) and not is_three_stage)
-        for widget in (self.learning_rate_spin, self.batch_size_spin, self.epochs_spin, self.optimizer_box):
-            widget.setEnabled((not running) and is_three_stage)
+        rf_widgets = (self.n_estimators_spin, self.max_depth_spin, self.random_state_spin)
+        three_stage_widgets = (self.learning_rate_spin, self.batch_size_spin, self.epochs_spin, self.optimizer_box)
+        self._set_parameter_rows_visible(rf_widgets, visible=not is_three_stage, enabled=(not running) and not is_three_stage)
+        self._set_parameter_rows_visible(
+            three_stage_widgets,
+            visible=is_three_stage,
+            enabled=(not running) and is_three_stage,
+        )
         if is_three_stage and not running:
             self.training_status_badge.set_status("无配置", "warning", size="sm")
         elif not running and self.task_type_box.currentIndex() == 0:
             self.training_status_badge.set_status("待启动", "info", size="sm")
+
+    def _set_parameter_rows_visible(self, widgets: tuple[QWidget, ...], *, visible: bool, enabled: bool) -> None:
+        """Show or hide complete parameter rows in the training form."""
+
+        form_layout = getattr(self, "ml_form_layout", None)
+        for widget in widgets:
+            widget.setVisible(visible)
+            widget.setEnabled(enabled)
+            if form_layout is None:
+                continue
+            label = form_layout.labelForField(widget)
+            if label is not None:
+                label.setVisible(visible)
 
     def _mark_model_name_edited(self) -> None:
         """记录用户已经手动改过模型名称，避免数据集切换时覆盖。"""

@@ -191,6 +191,10 @@ class MainWindow(QMainWindow):
         dataset_page.dataset_versions_updated.connect(lambda _records: self._refresh_overview_metrics())
         dataset_page.sample_records_updated.connect(recognition_page.set_sample_records)
         dataset_page.sample_records_updated.connect(lambda _records: self._refresh_overview_metrics())
+        dataset_page.maintenance_records_changed.connect(capture_page.refresh_records_from_database)
+        dataset_page.maintenance_records_changed.connect(preprocess_page.refresh_input_records)
+        dataset_page.maintenance_records_changed.connect(lambda: dataset_page.refresh_from_database())
+        dataset_page.maintenance_records_changed.connect(lambda: self._refresh_overview_metrics())
         train_page.trained_models_updated.connect(recognition_page.set_trained_models)
         train_page.trained_models_updated.connect(lambda _records: self._refresh_overview_metrics())
 

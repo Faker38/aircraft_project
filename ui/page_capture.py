@@ -45,6 +45,7 @@ from services import (
     USRPDiagnosticsResult,
     delete_raw_file_record,
     format_b210_preflight_summary,
+    list_raw_files,
     resolve_uhd_tool,
     save_raw_capture_record,
 )
@@ -531,6 +532,32 @@ class CapturePage(QWidget):
 
         if hasattr(self, "files_empty_label"):
             self.files_empty_label.setVisible(self.files_table.rowCount() == 0)
+
+    def refresh_records_from_database(self) -> None:
+        """Reload the raw-file record table from SQLite."""
+
+        self.files_table.setRowCount(0)
+        for record in list_raw_files():
+            suffix = Path(record.file_path).suffix.lstrip(".") or "-"
+            self._append_row(
+                [
+                    record.file_name,
+                    suffix,
+                    f"{record.center_frequency_hz / 1_000_000:.3f} MHz" if record.center_frequency_hz else "-",
+                    (
+                        f"{record.sample_rate_hz / 1_000_000:.3f} MHz / "
+                        f"{record.bandwidth_hz / 1_000_000:.3f} MHz"
+                        if record.sample_rate_hz or record.bandwidth_hz
+                        else "-"
+                    ),
+                    Path(record.file_path).parent.name or "-",
+                    "原始",
+                ],
+                file_path=record.file_path,
+            )
+        self._refresh_summary_metrics()
+        self._refresh_files_empty_state()
+        self._sync_delete_file_button()
 
     def _apply_mode_change(self) -> None:
         """Switch the capture page between 3943B and USRP modes."""

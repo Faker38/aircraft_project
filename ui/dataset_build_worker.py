@@ -26,14 +26,13 @@ def collect_dataset_candidates(
 ) -> tuple[dict[str, int], list[str], dict[str, str], list[tuple[str, str]]]:
     """从样本记录中提取可生成数据集的候选集。"""
 
-    use_type_label = task_type == "类型识别"
     label_counts: dict[str, int] = {}
     selected_sample_ids: list[str] = []
     label_values: dict[str, str] = {}
     sample_labels: list[tuple[str, str]] = []
 
     for record in sample_records:
-        label_value = record.label_type if use_type_label else record.label_individual
+        label_value = _unified_label(record)
         if record.status != "已标注" or not record.include_in_dataset or not label_value:
             continue
         label_counts[label_value] = label_counts.get(label_value, 0) + 1
@@ -77,7 +76,7 @@ def build_split_values(
     test_ratio: int,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, str]:
-    """按用户选择的真实策略生成训练、验证、测试划分。"""
+    """按标签随机划分生成训练、验证、测试集合。"""
 
     grouped: dict[str, list[SampleRecord]] = {}
     for record in sample_records:
@@ -93,23 +92,14 @@ def build_split_values(
 
     rng = random.Random(SPLIT_RANDOM_SEED)
     for label, records in sorted(grouped.items(), key=lambda item: item[0]):
-        if strategy == "按设备个体隔离":
-            label_split_values = _build_device_isolated_split(
-                label,
-                records,
-                train_ratio=train_ratio,
-                val_ratio=val_ratio,
-                test_ratio=test_ratio,
-                rng=rng,
-            )
-        else:
-            label_split_values = _build_stratified_random_split(
-                records,
-                train_ratio=train_ratio,
-                val_ratio=val_ratio,
-                test_ratio=test_ratio,
-                rng=rng,
-            )
+        _validate_label_split_capacity(label, records, train_ratio=train_ratio, test_ratio=test_ratio)
+        label_split_values = _build_stratified_random_split(
+            records,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            rng=rng,
+        )
         split_values.update(label_split_values)
         processed += len(records)
 
@@ -122,7 +112,27 @@ def build_split_values(
 def _label_for_task(record: SampleRecord, task_type: str) -> str:
     """返回当前任务使用的标签字段。"""
 
-    return record.label_type if task_type == "类型识别" else record.label_individual
+    return _unified_label(record)
+
+
+def _unified_label(record: SampleRecord) -> str:
+    """Return the single label used by the formal dataset flow."""
+
+    return (record.label_type or record.label_individual).strip()
+
+
+def _validate_label_split_capacity(
+    label: str,
+    records: list[SampleRecord],
+    *,
+    train_ratio: int,
+    test_ratio: int,
+) -> None:
+    """Ensure each label can appear in both train and test when requested."""
+
+    required = int(train_ratio > 0) + int(test_ratio > 0)
+    if required > 1 and len(records) < required:
+        raise ValueError(f"标签 {label} 样本数不足，无法同时进入训练集和测试集。")
 
 
 def _build_stratified_random_split(
@@ -151,61 +161,6 @@ def _build_stratified_random_split(
             split_values[sample_id] = "val"
         else:
             split_values[sample_id] = "test"
-    return split_values
-
-
-def _build_device_isolated_split(
-    label: str,
-    records: list[SampleRecord],
-    *,
-    train_ratio: int,
-    val_ratio: int,
-    test_ratio: int,
-    rng: random.Random,
-) -> dict[str, str]:
-    """按设备编号分组划分，保证同一设备不会跨 train/val/test。"""
-
-    target_counts = calculate_split_counts(
-        len(records),
-        train_ratio,
-        val_ratio,
-        test_ratio,
-    )
-    active_targets = [
-        (split_name, target_count)
-        for split_name, target_count in zip(SPLIT_NAMES, target_counts)
-        if target_count > 0
-    ]
-    grouped_by_device: dict[str, list[SampleRecord]] = {}
-    for record in sorted(records, key=lambda item: item.sample_id):
-        device_id = record.device_id.strip() or "未指定设备"
-        grouped_by_device.setdefault(device_id, []).append(record)
-
-    if len(grouped_by_device) < len(active_targets):
-        raise ValueError(
-            f"标签 {label} 只有 {len(grouped_by_device)} 个设备编号，"
-            f"无法按设备个体隔离切出 {len(active_targets)} 个数据集合；"
-            "请补充更多设备样本，或改用“按样本随机分层”。"
-        )
-
-    devices = sorted(grouped_by_device)
-    rng.shuffle(devices)
-    split_values: dict[str, str] = {}
-    for split_index, (split_name, target_count) in enumerate(active_targets):
-        is_last_split = split_index == len(active_targets) - 1
-        remaining_slots = len(active_targets) - split_index - 1
-        assigned_count = 0
-        while devices and (
-            is_last_split
-            or not assigned_count
-            or (assigned_count < target_count and len(devices) > remaining_slots)
-        ):
-            device_id = devices.pop(0)
-            device_records = grouped_by_device[device_id]
-            for record in device_records:
-                split_values[record.sample_id] = split_name
-            assigned_count += len(device_records)
-
     return split_values
 
 

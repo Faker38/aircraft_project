@@ -62,7 +62,7 @@ def train_type_model(
     if detail is None:
         raise ModelServiceError(f"未找到数据集版本：{version_id}")
     if detail.version.task_type != "类型识别":
-        raise ModelServiceError("请选择“类型识别”数据集版本。")
+        raise ModelServiceError("请选择可训练的数据集版本。")
     if not detail.items:
         raise ModelServiceError("数据集版本没有可训练样本。")
     if detail.missing_file_count:
@@ -91,7 +91,7 @@ def train_type_model(
 
     label_counts = Counter(item.label_value for item in detail.items if item.label_value)
     if len(label_counts) < 2:
-        raise ModelServiceError("类型识别真实训练至少需要两类标签，请先补齐样本标注。")
+        raise ModelServiceError("模型训练至少需要两类标签，请先补齐样本标注。")
 
     split_counts = Counter(item.split for item in detail.items)
     for split_name in ("train", "val", "test"):

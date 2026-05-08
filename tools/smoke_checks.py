@@ -25,6 +25,7 @@ def main() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
     check_python_ast()
     check_dataset_split_semantics()
+    check_dataset_ratio_controls()
     check_recognition_domain_warning()
     check_qt_minimal_instantiation()
     print("[OK] smoke checks completed")
@@ -64,7 +65,7 @@ def check_dataset_split_semantics() -> None:
     first = build_split_values(
         records,
         task_type="类型识别",
-        strategy="按样本随机分层",
+        strategy="按标签随机划分",
         train_ratio=50,
         val_ratio=25,
         test_ratio=25,
@@ -72,7 +73,7 @@ def check_dataset_split_semantics() -> None:
     second = build_split_values(
         records,
         task_type="类型识别",
-        strategy="按样本随机分层",
+        strategy="按标签随机划分",
         train_ratio=50,
         val_ratio=25,
         test_ratio=25,
@@ -80,24 +81,51 @@ def check_dataset_split_semantics() -> None:
     assert first == second, "random stratified split must be reproducible"
     assert set(first.values()) == {"train", "val", "test"}, "all split buckets should be used"
 
-    insufficient_records = [
-        _sample_record(sample_id=f"only_device_{index}", label_type="频点A", device_id="same_device")
-        for index in range(6)
-    ]
+    insufficient_records = [_sample_record(sample_id="single_label_sample", label_type="频点A", device_id="dev_001")]
     try:
         build_split_values(
             insufficient_records,
             task_type="类型识别",
-            strategy="按设备个体隔离",
+            strategy="按标签随机划分",
             train_ratio=50,
-            val_ratio=25,
-            test_ratio=25,
+            val_ratio=0,
+            test_ratio=50,
         )
     except ValueError:
         pass
     else:
-        raise AssertionError("device-isolated split should reject labels with too few devices")
+        raise AssertionError("label split should reject labels that cannot enter both train and test")
     print("[OK] dataset split semantics")
+
+
+def check_dataset_ratio_controls() -> None:
+    """Verify test-only generation visibly changes ratios and normal generation restores them."""
+
+    from PySide6.QtWidgets import QApplication
+
+    from ui.page_dataset import DatasetPage
+
+    app = QApplication.instance() or QApplication([])
+    page = DatasetPage()
+    page.sample_records = []
+    page.train_ratio.setValue(60)
+    page.val_ratio.setValue(20)
+    page.test_ratio.setValue(20)
+    page._generate_test_dataset_version()
+    assert (
+        page.train_ratio.value(),
+        page.val_ratio.value(),
+        page.test_ratio.value(),
+    ) == (0, 0, 100), "test dataset generation should show 0/0/100 ratios"
+    page._generate_dataset_version()
+    assert (
+        page.train_ratio.value(),
+        page.val_ratio.value(),
+        page.test_ratio.value(),
+    ) == (60, 20, 20), "normal dataset generation should restore the remembered training ratios"
+    page.close()
+    app.processEvents()
+    print("[OK] dataset ratio controls")
 
 
 def check_recognition_domain_warning() -> None:

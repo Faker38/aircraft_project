@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtGui import QFont
@@ -42,10 +43,21 @@ def print_runtime_diagnostics() -> None:
         print(f"[环境] cv2: 导入失败: {exc}")
 
 
+def _configure_qt_logging() -> None:
+    """Reduce noisy Windows monitor-interface logs without hiding app errors."""
+
+    existing_rules = os.environ.get("QT_LOGGING_RULES", "").strip()
+    screen_rule = "qt.qpa.screen=false"
+    if screen_rule in existing_rules:
+        return
+    os.environ["QT_LOGGING_RULES"] = f"{existing_rules};{screen_rule}" if existing_rules else screen_rule
+
+
 def main() -> int:
     """启动 Qt 应用。"""
 
     configure_console_encoding()
+    _configure_qt_logging()
     ensure_project_dirs()
     init_database()
     print_runtime_diagnostics()

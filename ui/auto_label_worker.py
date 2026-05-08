@@ -44,27 +44,13 @@ def build_auto_labeled_records(
                 status="待标注",
             )
             pending += 1
-        elif individual_mode:
-            mapped_type = mapping.get("type", "").strip()
-            mapped_individual = mapping.get("individual", "").strip()
-            mapped_status = "已标注" if mapped_individual else "待标注"
-            new_record = replace(
-                record,
-                label_type=mapped_type,
-                label_individual=mapped_individual,
-                status=mapped_status,
-            )
-            if mapped_status == "已标注":
-                matched += 1
-            else:
-                pending += 1
         else:
-            mapped_type = mapping.get("type", "").strip()
-            mapped_status = "已标注" if mapped_type else "待标注"
+            mapped_label = (mapping.get("type", "") or mapping.get("individual", "")).strip()
+            mapped_status = "已标注" if mapped_label else "待标注"
             new_record = replace(
                 record,
-                label_type=mapped_type,
-                label_individual="",
+                label_type=mapped_label,
+                label_individual=mapped_label,
                 status=mapped_status,
             )
             if mapped_status == "已标注":
